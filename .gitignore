@@ -1,0 +1,30 @@
+# Node
+node_modules/
+.next/
+out/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+
+# OS
+.DS_Store
+
+# Build artifacts
+.tmp/
+tmp/
+*.tsbuildinfo
+
+# Supabase CLI local state
+infra/supabase/supabase/

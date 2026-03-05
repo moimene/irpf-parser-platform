@@ -1,0 +1,6 @@
+{
+  "field_extraction_accuracy_min": 0.95,
+  "classification_accuracy_min": 0.9,
+  "rule_engine_consistency_min": 0.95,
+  "manual_review_recall_min": 0.9
+}

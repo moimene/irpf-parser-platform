@@ -1,0 +1,42 @@
+[
+  {
+    "name": "pictet_dividend",
+    "filename": "PICTET 001 DIC 2025 FAGU.pdf",
+    "text": "Dividendo ordinario 26/12/2025 NVIDIA 393,06 USD Retencion 15,50",
+    "expected_record_types": ["DIVIDENDO"],
+    "expected_fields": {
+      "operation_date": "2025-12-26",
+      "amount": 393.06
+    },
+    "requires_manual_review": false
+  },
+  {
+    "name": "goldman_interest",
+    "filename": "GS 553-4 DIC 2025 FAGU.pdf",
+    "text": "Interest Earned on Credit Balances 30/12/2025 110,88 EUR",
+    "expected_record_types": ["INTERES"],
+    "expected_fields": {
+      "operation_date": "2025-12-30",
+      "amount": 110.88
+    },
+    "requires_manual_review": false
+  },
+  {
+    "name": "citi_realized_gain",
+    "filename": "Citi Brokerage DIC 2025 FAGU.pdf",
+    "text": "Realized Gain/Loss Date Sold 01/04/2025 Proceeds 5630341,31",
+    "expected_record_types": ["VENTA"],
+    "expected_fields": {
+      "operation_date": "2025-04-01"
+    },
+    "requires_manual_review": false
+  },
+  {
+    "name": "unknown_low_signal",
+    "filename": "unknown.pdf",
+    "text": "abc",
+    "expected_record_types": [],
+    "expected_fields": {},
+    "requires_manual_review": true
+  }
+]
