@@ -1,6 +1,8 @@
 import { ExportGenerator } from "@/components/export-generator";
 import { IntakeForm } from "@/components/intake-form";
 
+export const dynamic = "force-dynamic";
+
 export default function ExpedientePage({ params }: { params: { id: string } }) {
   return (
     <div className="page">

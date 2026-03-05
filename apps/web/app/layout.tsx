@@ -1,23 +1,24 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Montserrat } from "next/font/google";
 import "./globals.css";
-
-const appFont = Montserrat({
-  subsets: ["latin"],
-  display: "swap",
-  weight: ["400", "500", "700"]
-});
 
 export const metadata: Metadata = {
   title: "IRPF Parser Console",
-  description: "Consola para extracción y validación fiscal IRPF/IP/720"
+  description: "Consola para extracción y validación fiscal IRPF/IP/720",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="es">
-      <body className={appFont.className}>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body>
         <div className="app-frame">
           <aside className="sidebar" aria-label="Navegación principal">
             <div className="sidebar-brand">

@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { DashboardStats } from "@/components/dashboard-stats";
 
+export const dynamic = "force-dynamic";
+
 export default function HomePage() {
   return (
     <div className="page">

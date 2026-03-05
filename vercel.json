@@ -1,0 +1,7 @@
+{
+  "buildCommand": "npm run build --workspace apps/web",
+  "outputDirectory": "apps/web/.next",
+  "installCommand": "npm install --legacy-peer-deps",
+  "framework": "nextjs",
+  "regions": ["mad1"]
+}
