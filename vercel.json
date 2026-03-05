@@ -3,6 +3,5 @@
   "framework": "nextjs",
   "installCommand": "npm install --legacy-peer-deps",
   "buildCommand": "npm run build --workspace apps/web",
-  "outputDirectory": "apps/web/.next",
-  "regions": ["mad1"]
+  "outputDirectory": "apps/web/.next"
 }
