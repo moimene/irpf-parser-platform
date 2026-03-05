@@ -12,7 +12,7 @@ Plataforma para extraccion, normalizacion y validacion fiscal de extractos finan
 ## Estado actual (Produccion)
 
 - Web (alias productivo): `https://web-moises-menendezs-projects.vercel.app`
-- Ultimo deployment productivo: `https://web-ndhzlmjic-moises-menendezs-projects.vercel.app`
+- Ultimo deployment productivo: `https://web-oiem8dh17-moises-menendezs-projects.vercel.app`
 - Parser Railway: `https://parser-production-0827.up.railway.app`
 - n8n Railway: `https://n8n-production-aaf5.up.railway.app`
 - Supabase project ref: `hvlsuwdqtffiilvampxq`
