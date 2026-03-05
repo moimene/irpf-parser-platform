@@ -1,0 +1,352 @@
+{
+  "name": "IRPF Parser Orchestration",
+  "nodes": [
+    {
+      "id": "Webhook_ParserEvents",
+      "name": "Parser Events In",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 280],
+      "webhookId": "irpf-parser-events",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "irpf/parse-events",
+        "responseMode": "responseNode"
+      }
+    },
+    {
+      "id": "Set_NormalizeEvent",
+      "name": "Normalize Event Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [360, 280],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "event_type",
+              "value": "={{ $json.event_type || $json.body?.event_type }}",
+              "type": "string"
+            },
+            {
+              "name": "document_id",
+              "value": "={{ $json.document_id || $json.body?.document_id }}",
+              "type": "string"
+            },
+            {
+              "name": "expediente_id",
+              "value": "={{ $json.expediente_id || $json.body?.expediente_id }}",
+              "type": "string"
+            },
+            {
+              "name": "payload",
+              "value": "={{ $json.payload || $json.body?.payload || {} }}",
+              "type": "object"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "Switch_EventType",
+      "name": "Switch Event Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [460, 280],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "parse.started",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "parse.completed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "parse.failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "manual.review.required",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "HTTP_Railway_Parse",
+      "name": "Call Railway Parser",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [730, 140],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.PARSER_SERVICE_URL + '/parse-document' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { document_id: $json.document_id, expediente_id: $json.expediente_id, filename: $json.payload?.filename || 'document.pdf', mime_type: 'application/pdf', content_base64: $json.payload?.content_base64, entity_hint: $json.payload?.entity_hint } }}"
+      }
+    },
+    {
+      "id": "Set_ParserResultEvent",
+      "name": "Build Parser Result Event",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [930, 140],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "event_type",
+              "value": "={{ $json.requires_manual_review ? 'manual.review.required' : 'parse.completed' }}",
+              "type": "string"
+            },
+            {
+              "name": "document_id",
+              "value": "={{ $json.document_id }}",
+              "type": "string"
+            },
+            {
+              "name": "expediente_id",
+              "value": "={{ $json.expediente_id }}",
+              "type": "string"
+            },
+            {
+              "name": "payload",
+              "value": "={{ { parser_strategy: $json.parser_strategy, template_used: $json.template_used, confidence: $json.confidence, warnings: $json.warnings, records: $json.records?.length || 0 } }}",
+              "type": "object"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "HTTP_Vercel_Webhook",
+      "name": "Update Vercel Parse State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [740, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VERCEL_API_BASE_URL + '/api/webhooks/parse-event' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}"
+      }
+    },
+    {
+      "id": "Set_AlertPayload",
+      "name": "Build Alert Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [740, 460],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "event_type",
+              "value": "={{ $json.event_type }}",
+              "type": "string"
+            },
+            {
+              "name": "document_id",
+              "value": "={{ $json.document_id }}",
+              "type": "string"
+            },
+            {
+              "name": "expediente_id",
+              "value": "={{ $json.expediente_id }}",
+              "type": "string"
+            },
+            {
+              "name": "payload",
+              "value": "={{ $json.payload }}",
+              "type": "object"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "Respond",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [980, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, event: $json.event_type } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Parser Events In": {
+      "main": [
+        [
+          {
+            "node": "Normalize Event Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Event Payload": {
+      "main": [
+        [
+          {
+            "node": "Switch Event Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Event Type": {
+      "main": [
+        [
+          {
+            "node": "Call Railway Parser",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Vercel Parse State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Alert Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Alert Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Railway Parser": {
+      "main": [
+        [
+          {
+            "node": "Build Parser Result Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Parser Result Event": {
+      "main": [
+        [
+          {
+            "node": "Update Vercel Parse State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Vercel Parse State": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Alert Payload": {
+      "main": [
+        [
+          {
+            "node": "Update Vercel Parse State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

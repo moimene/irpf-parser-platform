@@ -28,3 +28,4 @@ tmp/
 
 # Supabase CLI local state
 infra/supabase/supabase/
+.vercel

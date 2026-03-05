@@ -1,93 +1,74 @@
-# Variables de Entorno — Producción
+# Variables de Entorno - Produccion
 
-Este documento lista todas las variables de entorno necesarias para desplegar
-la plataforma en producción. **Nunca commitar valores reales a git.**
-
----
+Este documento lista las variables necesarias para desplegar el MVP IRPF Parser en produccion.
+No commitear secretos reales al repositorio.
 
 ## Vercel (apps/web)
 
-Configurar en: Vercel Dashboard → Project → Settings → Environment Variables
+Configurar en: Vercel -> Project -> Settings -> Environment Variables.
 
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | URL pública del proyecto Supabase | `https://xxxx.supabase.co` |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave anónima de Supabase (pública) | `eyJhbGciOi...` |
-| `SUPABASE_URL` | URL del proyecto Supabase (server-side) | `https://xxxx.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Clave de servicio de Supabase (secreta) | `eyJhbGciOi...` |
-| `PARSER_SERVICE_URL` | URL del parser service en Railway | `https://parser-xxx.railway.app` |
-| `N8N_WEBHOOK_URL` | URL del webhook de n8n para orquestación | `https://n8n-xxx.railway.app/webhook/parse` |
-| `AUTO_PARSE_ON_INTAKE` | Activar parseo automático al subir PDF | `true` o `false` |
+Variables obligatorias (7):
 
----
+1. `SUPABASE_URL`
+2. `SUPABASE_SERVICE_ROLE_KEY`
+3. `SUPABASE_PUBLISHABLE_KEY`
+4. `NEXT_PUBLIC_SUPABASE_URL`
+5. `N8N_WEBHOOK_URL`
+6. `PARSER_SERVICE_URL`
+7. `AUTO_PARSE_ON_INTAKE`
 
-## Railway (services/parser)
+Compatibilidad adicional soportada por el codigo:
 
-Configurar en: Railway Dashboard → Service → Variables
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (fallback de `SUPABASE_PUBLISHABLE_KEY`)
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
 
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `OPENAI_API_KEY` | Clave de OpenAI para el fallback LLM (Nivel 2/3) | `sk-proj-...` |
-| `SUPABASE_URL` | URL del proyecto Supabase | `https://xxxx.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Clave de servicio de Supabase | `eyJhbGciOi...` |
-| `PORT` | Puerto del servidor (Railway lo inyecta automáticamente) | `8000` |
+Valores recomendados actuales:
 
----
+- `N8N_WEBHOOK_URL=https://n8n-production-aaf5.up.railway.app/webhook/irpf/parse-events`
+- `PARSER_SERVICE_URL=https://parser-production-0827.up.railway.app`
+- `AUTO_PARSE_ON_INTAKE=true`
 
-## n8n (Railway — instancia n8n)
+## Railway - Parser Service (`services/parser`)
 
-Configurar en: n8n Settings → Environment Variables o Railway Variables
+Variables obligatorias:
 
-| Variable | Descripción |
-|---|---|
-| `PARSER_SERVICE_URL` | URL del parser service para el nodo "Call Railway Parser" |
-| `SUPABASE_URL` | Para los nodos de Supabase en los workflows |
-| `SUPABASE_SERVICE_ROLE_KEY` | Para escritura en tablas de Supabase |
-| `N8N_ENCRYPTION_KEY` | Clave de cifrado de credenciales de n8n (generar con `openssl rand -hex 32`) |
-| `WEBHOOK_URL` | URL base de n8n para webhooks (ej: `https://n8n-xxx.railway.app`) |
+1. `OPENAI_API_KEY`
+2. `SUPABASE_URL`
+3. `SUPABASE_SERVICE_ROLE_KEY`
 
----
+Variable inyectada por plataforma:
 
-## Supabase — Configuración de Storage
+- `PORT`
 
-Crear el bucket `irpf-documents` en Supabase Storage con las siguientes políticas RLS:
+## Railway - n8n
 
-```sql
--- Política de inserción (solo service role)
-CREATE POLICY "Service role puede subir documentos"
-ON storage.objects FOR INSERT
-TO service_role
-USING (bucket_id = 'irpf-documents');
+Variables obligatorias:
 
--- Política de lectura (solo service role)
-CREATE POLICY "Service role puede leer documentos"
-ON storage.objects FOR SELECT
-TO service_role
-USING (bucket_id = 'irpf-documents');
-```
+1. `PARSER_SERVICE_URL`
+2. `VERCEL_API_BASE_URL`
+3. `N8N_ENCRYPTION_KEY`
+4. `WEBHOOK_URL`
 
----
+Workflow objetivo:
+
+- `infra/n8n/workflows/parse-document-workflow.json`
+
+Nota:
+
+- En este repo, `parse-document-workflow.json` referencia el mismo flujo base que `irpf-parser-orchestration.json`.
+
+## Supabase
+
+Proyecto usado actualmente: `hvlsuwdqtffiilvampxq`.
+
+Bucket esperado para documentos:
+
+- `irpf-documents`
 
 ## Orden de despliegue recomendado
 
-1. **Supabase** — Ejecutar la migración `infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`
-2. **Railway (parser)** — Desplegar `services/parser/` con las variables de entorno configuradas
-3. **Railway (n8n)** — Importar el workflow `infra/n8n/workflows/parse-document-workflow.json`
-4. **Vercel** — Conectar el repositorio GitHub, configurar `Root Directory: apps/web`, añadir variables de entorno
-
----
-
-## Verificación post-despliegue
-
-```bash
-# 1. Verificar parser service
-curl https://parser-xxx.railway.app/health
-
-# 2. Verificar webhook n8n
-curl -X POST https://n8n-xxx.railway.app/webhook/parse-document \
-  -H "Content-Type: application/json" \
-  -d '{"document_id": "test", "content_base64": ""}'
-
-# 3. Verificar Vercel
-curl https://irpf-parser.vercel.app/api/dashboard
-```
+1. Supabase: aplicar `infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`.
+2. Railway parser: desplegar `services/parser/` con variables configuradas.
+3. Railway n8n: importar/activar workflow `infra/n8n/workflows/parse-document-workflow.json`.
+4. Vercel: conectar repo GitHub y cargar variables de este documento.
