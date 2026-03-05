@@ -22,6 +22,7 @@ Compatibilidad adicional soportada por el codigo:
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` (fallback de `SUPABASE_PUBLISHABLE_KEY`)
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_STORAGE_BUCKET` (opcional, default `irpf-documents`)
 
 Valores recomendados actuales:
 

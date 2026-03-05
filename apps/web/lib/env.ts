@@ -18,6 +18,9 @@ export const env = {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
       process.env.VITE_SUPABASE_PUBLISHABLE_KEY
   ),
+  supabaseStorageBucket:
+    clean(process.env.SUPABASE_STORAGE_BUCKET ?? process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET) ??
+    "irpf-documents",
   n8nWebhookUrl: clean(process.env.N8N_WEBHOOK_URL),
   parserServiceUrl: clean(process.env.PARSER_SERVICE_URL),
   autoParseOnIntake: clean(process.env.AUTO_PARSE_ON_INTAKE) === "true"

@@ -15,11 +15,23 @@ type IntakeResponse = {
  items: IntakeItem[];
 };
 
+type UploadUrlItem = {
+ client_id: string;
+ filename: string;
+ storage_path: string;
+ signed_url: string;
+};
+
+type UploadUrlResponse = {
+ uploads: UploadUrlItem[];
+};
+
 interface IntakeFormProps {
  expedienteId: string;
 }
 
 export function IntakeForm({ expedienteId }: IntakeFormProps) {
+ const MAX_FILE_BYTES = 15 * 1024 * 1024;
  const fileInputRef = useRef<HTMLInputElement>(null);
  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
  const [entityHint, setEntityHint] = useState<string>("");
@@ -34,22 +46,36 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
  setError("Máximo 20 ficheros por petición (HU-001).");
  return;
  }
+ const oversizedFile = files.find((file) => file.size > MAX_FILE_BYTES);
+ if (oversizedFile) {
+ setError(`El fichero ${oversizedFile.name} supera el límite de 15 MB.`);
+ return;
+ }
  setSelectedFiles(files);
  setError(null);
  }
 
- async function fileToBase64(file: File): Promise<string> {
- return new Promise((resolve, reject) => {
- const reader = new FileReader();
- reader.onload = () => {
- const result = reader.result as string;
- // Eliminar el prefijo "data:application/pdf;base64,"
- const base64 = result.split(",")[1] ?? result;
- resolve(base64);
- };
- reader.onerror = reject;
- reader.readAsDataURL(file);
+ async function uploadFileToSignedUrl(signedUrl: string, file: File): Promise<void> {
+ const formData = new FormData();
+ formData.append("cacheControl", "3600");
+ formData.append("", file);
+
+ const controller = new AbortController();
+ const timeoutId = window.setTimeout(() => controller.abort(), 120_000);
+
+ try {
+ const response = await fetch(signedUrl, {
+ method: "PUT",
+ body: formData,
+ signal: controller.signal
  });
+ if (!response.ok) {
+ const body = await response.text().catch(() => "");
+ throw new Error(`Error subiendo ${file.name} (${response.status}): ${body || "sin detalle"}`);
+ }
+ } finally {
+ window.clearTimeout(timeoutId);
+ }
  }
 
  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -61,23 +87,51 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
  setError(null);
  setResult(null);
  setSubmitting(true);
- setProgress("Leyendo ficheros...");
+ setProgress("Preparando subida segura...");
 
  try {
- // Convertir todos los PDFs a base64
- const documents = await Promise.all(
- selectedFiles.map(async (file) => {
- const base64 = await fileToBase64(file);
- return {
+ const filesForUpload = selectedFiles.map((file, index) => ({
+ client_id: String(index),
  filename: file.name,
- source_type: "PDF" as const,
- content_base64: base64,
- entity_hint: entityHint || undefined,
- };
- })
- );
+ content_type: file.type || "application/pdf",
+ size_bytes: file.size
+ }));
 
- setProgress(`Enviando ${documents.length} documento(s) al parser...`);
+ const uploadUrlsResponse = await fetch("/api/documents/upload-urls", {
+ method: "POST",
+ headers: { "content-type": "application/json" },
+ body: JSON.stringify({
+ expediente_id: expedienteId,
+ files: filesForUpload
+ })
+ });
+ const uploadPayload = (await uploadUrlsResponse.json()) as UploadUrlResponse | { error: string };
+ if (!uploadUrlsResponse.ok) {
+ setError((uploadPayload as { error: string }).error ?? "No se pudo preparar la subida de ficheros");
+ return;
+ }
+
+ const uploadPlan = uploadPayload as UploadUrlResponse;
+ const fileByClientId = new Map(filesForUpload.map((file, index) => [file.client_id, selectedFiles[index]]));
+
+ for (let i = 0; i < uploadPlan.uploads.length; i += 1) {
+ const upload = uploadPlan.uploads[i];
+ const file = fileByClientId.get(upload.client_id);
+ if (!file) {
+ throw new Error(`No se encontró fichero local para ${upload.filename}`);
+ }
+ setProgress(`Subiendo ${i + 1}/${uploadPlan.uploads.length}: ${upload.filename}`);
+ await uploadFileToSignedUrl(upload.signed_url, file);
+ }
+
+ const documents = uploadPlan.uploads.map((upload) => ({
+ filename: upload.filename,
+ source_type: "PDF" as const,
+ storage_path: upload.storage_path,
+ entity_hint: entityHint || undefined,
+ }));
+
+ setProgress(`Registrando ${documents.length} documento(s) para parseo...`);
 
  const response = await fetch("/api/documents/intake", {
  method: "POST",
@@ -109,8 +163,8 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
  <section className="card">
  <h2>Ingesta de Documentos</h2>
  <p className="muted">
- Sube hasta 20 PDFs bancarios (Pictet, Goldman Sachs, Citi u otros). El contenido se
- envía al parser en Railway para extracción automática.
+ Sube hasta 20 PDFs bancarios (Pictet, Goldman Sachs, Citi u otros). Los ficheros se cargan
+ directamente a Supabase Storage y luego se encolan para parseo automático en Railway.
  </p>
  <form className="form" onSubmit={handleSubmit}>
  <label htmlFor="pdf-files">Archivos PDF (máx. 20)</label>

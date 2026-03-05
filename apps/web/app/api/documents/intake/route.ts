@@ -7,6 +7,8 @@ import { emitWorkflowEvent } from "@/lib/events";
 import { env } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
+const MAX_PARSE_FILE_BYTES = 15 * 1024 * 1024;
+
 const intakeSchema = z.object({
   expediente_id: z.string().min(3),
   client_id: z.string().optional(),
@@ -29,6 +31,7 @@ async function processWithParser(payload: {
   documentId: string;
   expedienteId: string;
   filename: string;
+  storagePath?: string;
   contentBase64?: string;
   entityHint?: string;
 }) {
@@ -43,6 +46,32 @@ async function processWithParser(payload: {
 
   try {
     const startedAt = new Date().toISOString();
+    let contentBase64 = payload.contentBase64;
+
+    if (!contentBase64 && payload.storagePath) {
+      const { data: storageFile, error: downloadError } = await supabase.storage
+        .from(env.supabaseStorageBucket)
+        .download(payload.storagePath);
+
+      if (downloadError || !storageFile) {
+        throw new Error(
+          `No se pudo descargar ${payload.filename} desde storage (${payload.storagePath}): ${
+            downloadError?.message ?? "unknown"
+          }`
+        );
+      }
+
+      if (storageFile.size > MAX_PARSE_FILE_BYTES) {
+        throw new Error(
+          `Documento ${payload.filename} supera el máximo soportado (${Math.round(
+            MAX_PARSE_FILE_BYTES / (1024 * 1024)
+          )}MB).`
+        );
+      }
+
+      const fileBuffer = Buffer.from(await storageFile.arrayBuffer());
+      contentBase64 = fileBuffer.toString("base64");
+    }
 
     const { error: statusError } = await supabase
       .from(dbTables.documents)
@@ -62,7 +91,7 @@ async function processWithParser(payload: {
         document_id: payload.documentId,
         expediente_id: payload.expedienteId,
         filename: payload.filename,
-        content_base64: payload.contentBase64,
+        content_base64: contentBase64,
         entity_hint: payload.entityHint,
         mime_type: "application/pdf"
       })
@@ -229,6 +258,7 @@ export async function POST(request: Request) {
           documentId,
           expedienteId: resolvedExpediente.id,
           filename: document.filename,
+          storagePath: document.storage_path,
           contentBase64: document.content_base64,
           entityHint: document.entity_hint
         });

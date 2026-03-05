@@ -14,6 +14,24 @@ test.describe("Ciclo crítico IRPF", () => {
     "Este ciclo necesita Supabase configurado en local o ejecutar contra un entorno desplegado via E2E_BASE_URL."
   );
 
+  test("ui upload -> intake con signed URLs", async ({ page }) => {
+    const runId = Date.now();
+    const expedienteRef = `pw-ui-${runId}`;
+    const filename = `pw_ui_${runId}.pdf`;
+    const tinyPdf = Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF");
+
+    await page.goto(`/expedientes/${expedienteRef}`);
+    await page.setInputFiles("#pdf-files", {
+      name: filename,
+      mimeType: "application/pdf",
+      buffer: tinyPdf
+    });
+
+    await page.getByRole("button", { name: "Encolar 1 documento(s)" }).click();
+    await expect(page.getByText("1 documento(s) encolado(s)")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("pre")).toContainText('"accepted": 1');
+  });
+
   test("intake -> review -> export (playwright cycle)", async ({ page, request }) => {
     const runId = Date.now();
     const expedienteRef = `pw-cycle-${runId}`;
