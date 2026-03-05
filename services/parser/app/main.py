@@ -1,14 +1,50 @@
+"""
+IRPF Parser Service — FastAPI v0.2.0
+Endpoints:
+  GET  /health            — health check con versión y capacidades
+  POST /parse-document    — parseo de documento (PDF base64 o texto)
+"""
+import os
 from fastapi import FastAPI
-
+from fastapi.middleware.cors import CORSMiddleware
 from app.parser_engine import parse_document
 from app.schemas import ParseDocumentRequest, ParseDocumentResponse
 
-app = FastAPI(title="IRPF Parser Service", version="0.1.0")
+app = FastAPI(
+    title="IRPF Parser Service",
+    version="0.2.0",
+    description="Parser adaptativo de 3 niveles para documentos bancarios IRPF/IP/720",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "service": "irpf-parser", "version": "0.1.0"}
+    has_pdfplumber = False
+    try:
+        import pdfplumber  # noqa: F401
+        has_pdfplumber = True
+    except ImportError:
+        pass
+    has_llm = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    return {
+        "ok": True,
+        "service": "irpf-parser",
+        "version": "0.2.0",
+        "capabilities": {
+            "pdfplumber": has_pdfplumber,
+            "pypdf_fallback": True,
+            "llm_fallback": has_llm,
+            "entities": ["PICTET", "GOLDMAN_SACHS", "CITI"],
+        },
+    }
 
 
 @app.post("/parse-document", response_model=ParseDocumentResponse)
