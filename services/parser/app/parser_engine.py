@@ -1,6 +1,6 @@
 """
 Motor de parseo adaptativo en 3 niveles:
-  Nivel 1 — Plantillas por entidad (Pictet, Goldman Sachs, Citi) con pdfplumber
+  Nivel 1 — Plantillas por entidad (Pictet, Goldman Sachs, Citi, J.P. Morgan) con pdfplumber
   Nivel 2 — Fallback LLM (GPT-4o-mini) para entidades desconocidas o baja extracción
   Nivel 3 — Escalado a revisión manual si confianza < umbral
 """
@@ -9,7 +9,7 @@ from io import BytesIO
 from typing import List, Optional, Tuple
 
 from app.extractors import base as base_utils
-from app.extractors import citi, goldman, pictet
+from app.extractors import citi, goldman, jpmorgan, pictet
 from app.extractors.base import ExtractedRecord, extract_text_from_pdf
 from app.extractors.llm_fallback import extract as llm_extract
 from app.schemas import (
@@ -31,6 +31,8 @@ def detect_entity(filename: str, entity_hint: Optional[str], text: str) -> str:
         return "GOLDMAN_SACHS"
     if "citi" in candidate:
         return "CITI"
+    if any(k in candidate for k in ["j.p. morgan", "jpmorgan", "jp morgan", "chaslulx", "account opening"]):
+        return "JP_MORGAN"
     return "UNKNOWN"
 
 
@@ -202,6 +204,9 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
                 elif entity == "CITI":
                     extracted_records = citi.extract(pdf_bytes)
                     template_used = "citi.v2"
+                elif entity == "JP_MORGAN":
+                    extracted_records = jpmorgan.extract(pdf_bytes)
+                    template_used = "jpmorgan.v1"
             else:
                 extracted_records = _extract_from_text(entity, full_text)
                 template_used = f"{entity.lower()}.text.v2"

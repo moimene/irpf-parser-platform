@@ -228,11 +228,33 @@ export async function POST(request: Request) {
     documents.map(async (document) => {
       const documentId = crypto.randomUUID();
 
+      // Gap B — Subir el PDF original a Supabase Storage para trazabilidad y re-ingesta
+      let storagePath = document.storage_path ?? null;
+      if (document.content_base64 && !storagePath) {
+        try {
+          const pdfBuffer = Buffer.from(document.content_base64, "base64");
+          const storageKey = `${resolvedExpediente.id}/${documentId}/${document.filename}`;
+          const { error: uploadError } = await supabase.storage
+            .from("irpf-documents")
+            .upload(storageKey, pdfBuffer, {
+              contentType: "application/pdf",
+              upsert: false,
+            });
+          if (uploadError) {
+            console.warn(`[intake] Storage upload failed for ${document.filename}: ${uploadError.message}`);
+          } else {
+            storagePath = storageKey;
+          }
+        } catch (storageErr) {
+          console.warn(`[intake] Storage upload exception: ${storageErr}`);
+        }
+      }
+
       const { error: documentError } = await supabase.from(dbTables.documents).insert({
         id: documentId,
         expediente_id: resolvedExpediente.id,
         filename: document.filename,
-        storage_path: document.storage_path,
+        storage_path: storagePath,
         source_type: document.source_type ?? "PDF",
         processing_status: "queued",
         metadata: {

@@ -2,14 +2,46 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { dbTables } from "@/lib/db-tables";
 import { createSupabaseAdminClient } from "@/lib/supabase";
+import { detectBlockedLosses, type TradeEvent, type AssetKind } from "@/lib/rules-core";
 
 const reviewActionSchema = z.object({
   action: z.enum(["approve", "reject", "request_correction"]),
   reviewer: z.string().optional().default("fiscalista.demo"),
   notes: z.string().optional(),
-  // Para approve: opcionalmente sobrescribir campos corregidos
-  corrected_fields: z.record(z.unknown()).optional(),
+  corrected_fields: z.record(z.string(), z.unknown()).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Helpers para convertir registros del parser a TradeEvents del motor fiscal
+// ---------------------------------------------------------------------------
+function toTradeEvents(records: Array<Record<string, unknown>>): TradeEvent[] {
+  return records
+    .filter((rec) => ["COMPRA", "VENTA"].includes(String(rec.record_type ?? "")))
+    .map((rec) => {
+      const fields = (rec.fields ?? {}) as Record<string, unknown>;
+      const type = rec.record_type === "COMPRA" ? "BUY" : "SELL";
+      const gainLoss =
+        type === "SELL" && fields.realized_gain != null
+          ? Number(fields.realized_gain)
+          : type === "SELL" && fields.amount != null
+          ? Number(fields.amount)
+          : undefined;
+      // Determinar si el activo cotiza en mercado organizado
+      const isin = fields.isin ? String(fields.isin) : "";
+      // Heurística: ISINs de fondos privados (Citi, GS PE) suelen empezar por XS o KY
+      const assetKind: AssetKind =
+        isin.startsWith("XS") || isin.startsWith("KY") ? "UNLISTED" : "LISTED";
+      return {
+        id: String(fields.operation_id ?? crypto.randomUUID()),
+        isin,
+        type,
+        tradeDate: String(fields.operation_date ?? new Date().toISOString().slice(0, 10)),
+        quantity: fields.quantity != null ? Number(fields.quantity) : 1,
+        gainLossEur: gainLoss,
+        assetKind,
+      } satisfies TradeEvent;
+    });
+}
 
 export async function PATCH(
   request: Request,
@@ -79,18 +111,53 @@ export async function PATCH(
     );
   }
 
-  // Si se aprueba, persistir los registros en irpf_operations
+  // Si se aprueba, persistir los registros en irpf_operations y aplicar reglas fiscales
   let operationsSaved = 0;
+  let blockedLossesDetected = 0;
+  const fiscalAlerts: string[] = [];
+
   if (action === "approve") {
     const records = (updatedPayload.records as Array<Record<string, unknown>>) ?? [];
+
+    // Gap C — Motor de Reglas Fiscales: detectar pérdidas bloqueadas (art. 33.5 LIRPF)
+    const tradeEvents = toTradeEvents(records);
+    const blockedLosses = detectBlockedLosses(tradeEvents);
+    blockedLossesDetected = blockedLosses.length;
+
+    if (blockedLosses.length > 0) {
+      // Registrar alerta por cada pérdida bloqueada detectada
+      for (const bl of blockedLosses) {
+        fiscalAlerts.push(bl.reason);
+        await supabase.from(dbTables.alerts).insert({
+          id: crypto.randomUUID(),
+          expediente_id: extraction.expediente_id,
+          severity: "warning",
+          category: "fiscal.blocked_loss",
+          message: bl.reason,
+          status: "open",
+          entity_type: "extraction",
+          entity_id: extractionId,
+          metadata: {
+            sell_event_id: bl.sellEventId,
+            blocked_by_buy_event_id: bl.blockedByBuyEventId,
+            window_months: bl.windowMonths,
+          },
+        });
+      }
+    }
+
+    // Persistir operaciones en irpf_operations
     const operationsToInsert = records
       .filter((rec) => {
-        const fields = rec.fields as Record<string, unknown> | undefined;
         const recType = String(rec.record_type ?? "");
-        return ["COMPRA", "VENTA", "DIVIDENDO", "INTERES"].includes(recType) && fields;
+        return ["COMPRA", "VENTA", "DIVIDENDO", "INTERES"].includes(recType);
       })
       .map((rec) => {
-        const fields = rec.fields as Record<string, unknown>;
+        const fields = (rec.fields ?? {}) as Record<string, unknown>;
+        // Marcar si esta operación tiene pérdida bloqueada
+        const tradeEventId = String(fields.operation_id ?? "");
+        const isBlocked = blockedLosses.some((bl) => bl.sellEventId === tradeEventId);
+
         return {
           id: crypto.randomUUID(),
           expediente_id: extraction.expediente_id,
@@ -103,10 +170,15 @@ export async function PATCH(
           currency: fields.currency ? String(fields.currency) : "EUR",
           retention: fields.retention != null ? Number(fields.retention) : null,
           quantity: fields.quantity != null ? Number(fields.quantity) : null,
-          realized_gain: rec.record_type === "VENTA" && fields.amount != null
-            ? Number(fields.amount)
-            : null,
-          raw_data: fields,
+          realized_gain:
+            rec.record_type === "VENTA" && fields.amount != null ? Number(fields.amount) : null,
+          raw_data: {
+            ...fields,
+            // Gap C — anotar resultado del motor fiscal en el registro
+            fiscal_flags: isBlocked
+              ? ["PERDIDA_BLOQUEADA_ART33_5_LIRPF"]
+              : [],
+          },
           source: "parser.auto",
         };
       });
@@ -143,6 +215,8 @@ export async function PATCH(
       review_status: newReviewStatus,
       notes,
       operations_saved: operationsSaved,
+      blocked_losses_detected: blockedLossesDetected,
+      fiscal_alerts: fiscalAlerts,
     },
   });
 
@@ -150,10 +224,17 @@ export async function PATCH(
     extraction_id: extractionId,
     review_status: newReviewStatus,
     operations_saved: operationsSaved,
-    message: action === "approve"
-      ? `Aprobado. ${operationsSaved} operación(es) guardadas en irpf_operations.`
-      : action === "reject"
-      ? "Documento rechazado. Requiere nueva ingesta."
-      : "Marcado para corrección.",
+    blocked_losses_detected: blockedLossesDetected,
+    fiscal_alerts: fiscalAlerts,
+    message:
+      action === "approve"
+        ? `Aprobado. ${operationsSaved} operacion(es) guardadas.${
+            blockedLossesDetected > 0
+              ? ` Advertencia: ${blockedLossesDetected} perdida(s) bloqueada(s) por art. 33.5 LIRPF.`
+              : ""
+          }`
+        : action === "reject"
+        ? "Documento rechazado. Requiere nueva ingesta."
+        : "Marcado para correccion.",
   });
 }

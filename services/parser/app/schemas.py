@@ -10,7 +10,7 @@ class SourceSpan(BaseModel):
 
 
 class ParsedRecord(BaseModel):
-    record_type: Literal["DIVIDENDO", "INTERES", "COMPRA", "VENTA", "POSICION", "DESCONOCIDO"]
+    record_type: Literal["DIVIDENDO", "INTERES", "COMPRA", "VENTA", "POSICION", "CUENTA_BANCARIA", "MOVIMIENTO", "DESCONOCIDO"]
     fields: Dict[str, Any]
     confidence: float = Field(ge=0.0, le=1.0)
     source_spans: List[SourceSpan]
