@@ -3,6 +3,8 @@ import Link from "next/link";
 import { getAbogadoActual } from "@/lib/supabase-auth";
 import "./globals.css";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "IRPF Parser Console",
   description: "Consola para extracción y validación fiscal IRPF/IP/720",
