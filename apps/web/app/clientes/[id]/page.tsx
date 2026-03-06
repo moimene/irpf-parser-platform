@@ -19,7 +19,7 @@ interface Client {
   full_name: string;
   nif: string;
   email?: string;
-  irpf_expedientes?: Array<{ id: string; ejercicio: number; estado: string }>;
+  irpf_expedientes?: Array<{ id: string; fiscal_year: number; status: string; reference: string; title: string }>;
 }
 
 interface PatrimonioRow {
@@ -337,12 +337,49 @@ export default function ClienteDetallePage() {
 
       {activeTab === "documentos" && (
         <div className="tab-content">
-          <div className="tab-redirect">
-            <p>Gestion de documentos e ingesta de PDFs bancarios.</p>
-            <Link href={`/expedientes/${client.irpf_expedientes?.[0]?.id ?? ""}`} className="btn-primary">
-              Ir al expediente activo
+          <div className="expedientes-header">
+            <h2 className="section-title">Expedientes fiscales</h2>
+            <Link
+              href={`/expedientes/${client.irpf_expedientes?.[0]?.id ?? ""}?client_id=${client.id}`}
+              className="btn-primary"
+            >
+              + Nueva ingesta de PDF
             </Link>
           </div>
+          {!client.irpf_expedientes?.length ? (
+            <div className="empty-state-docs">
+              <p>No hay expedientes para este cliente.</p>
+            </div>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Referencia</th>
+                  <th>Ejercicio</th>
+                  <th>Estado</th>
+                  <th>Creado</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {client.irpf_expedientes.map((exp) => (
+                  <tr key={exp.id}>
+                    <td className="cell-mono">{exp.reference}</td>
+                    <td className="cell-center">{exp.fiscal_year}</td>
+                    <td>
+                      <span className={`status-badge status-${exp.status.toLowerCase()}`}>
+                        {exp.status}
+                      </span>
+                    </td>
+                    <td className="cell-muted">—</td>
+                    <td>
+                      <Link href={`/expedientes/${exp.id}`} className="btn-link">Abrir</Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 
@@ -413,6 +450,21 @@ export default function ClienteDetallePage() {
         .btn-secondary:hover { background: #f5f4f0; }
         .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
         .btn-primary { display: inline-block; padding: 0.5rem 1.25rem; background: var(--color-primary, #004438); color: #fff; font-size: 0.875rem; font-weight: 600; border: none; cursor: pointer; text-decoration: none; }
+        .btn-link { color: var(--color-primary, #004438); text-decoration: underline; font-size: 0.82rem; }
+        .expedientes-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
+        .section-title { font-size: 1rem; font-weight: 700; color: var(--color-primary, #004438); margin: 0; }
+        .empty-state-docs { padding: 2rem; color: var(--color-muted, #888); font-size: 0.875rem; }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        .data-table th { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 2px solid var(--color-border, #d8d4cc); font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-primary, #004438); background: #f5f4f0; }
+        .data-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #f0ede6; }
+        .data-table tr:hover td { background: #faf9f6; }
+        .cell-mono { font-family: 'Courier New', monospace; }
+        .cell-center { text-align: center; }
+        .cell-muted { color: var(--color-muted, #888); }
+        .status-badge { display: inline-block; padding: 2px 8px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-en_revision { background: #fff3cd; color: #856404; }
+        .status-completado { background: #d1e7dd; color: #0a3622; }
+        .status-borrador { background: #e2e3e5; color: #41464b; }
       `}</style>
     </div>
   );

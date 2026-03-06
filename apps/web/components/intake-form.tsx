@@ -28,9 +28,10 @@ type UploadUrlResponse = {
 
 interface IntakeFormProps {
  expedienteId: string;
+ onSuccess?: () => void;
 }
 
-export function IntakeForm({ expedienteId }: IntakeFormProps) {
+export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
  const MAX_FILE_BYTES = 15 * 1024 * 1024;
  const fileInputRef = useRef<HTMLInputElement>(null);
  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -150,6 +151,7 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
  setResult(payload as IntakeResponse);
  setSelectedFiles([]);
  if (fileInputRef.current) fileInputRef.current.value = "";
+ if (onSuccess) onSuccess();
  } catch (err) {
  setError(err instanceof Error ? err.message : "No se pudo ejecutar la ingesta");
  } finally {

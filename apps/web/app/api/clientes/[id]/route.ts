@@ -17,8 +17,8 @@ export async function GET(
     .select(`
       *,
       irpf_expedientes (
-        id, ejercicio, estado, created_at,
-        irpf_documents (id, filename, status, entity_type, created_at)
+        id, fiscal_year, status, reference, title, created_at,
+        irpf_documents (id, filename, processing_status, entity, detected_template, confidence, manual_review_required, created_at)
       ),
       irpf_asignaciones (
         abogado_id,

@@ -4,8 +4,9 @@ import Link from "next/link";
 
 interface Expediente {
   id: string;
-  ejercicio: number;
-  estado: string;
+  fiscal_year: number;
+  status: string;
+  reference: string;
 }
 
 interface Client {

@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
     .from("irpf_clients")
     .select(`
       id, full_name, nif, email, phone, notes, created_at,
-      irpf_expedientes (id, ejercicio, estado)
+      irpf_expedientes (id, fiscal_year, status, reference)
     `)
     .order("full_name");
 
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   const clients = (data ?? []).map((c: any) => ({
     ...c,
     num_expedientes: c.irpf_expedientes?.length ?? 0,
-    ejercicios: [...new Set((c.irpf_expedientes ?? []).map((e: any) => e.ejercicio).filter(Boolean))].sort().reverse(),
+    ejercicios: [...new Set((c.irpf_expedientes ?? []).map((e: any) => e.fiscal_year).filter(Boolean))].sort().reverse(),
   }));
 
   return NextResponse.json({ clients });
