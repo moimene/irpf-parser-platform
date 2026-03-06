@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { getAbogadoActual } from "@/lib/supabase-auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -7,7 +8,15 @@ export const metadata: Metadata = {
   description: "Consola para extracción y validación fiscal IRPF/IP/720",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+const ROL_LABEL: Record<string, string> = {
+  socio: "Socio",
+  asociado: "Asociado",
+  paralegal: "Paralegal",
+};
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const abogado = await getAbogadoActual().catch(() => null);
+
   return (
     <html lang="es">
       <head>
@@ -29,16 +38,32 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/" className="sidebar-link">
                 Dashboard operativo
               </Link>
-              <Link href="/expedientes/demo-irpf-2025" className="sidebar-link">
-                Expediente demo
+              <Link href="/clientes" className="sidebar-link">
+                Clientes
               </Link>
               <Link href="/review" className="sidebar-link">
                 Revisión manual
               </Link>
             </nav>
+
+            {abogado && (
+              <div className="sidebar-user">
+                <div className="sidebar-user-info">
+                  <span className="sidebar-user-name">{abogado.nombre}</span>
+                  <span className="sidebar-user-rol">
+                    {ROL_LABEL[abogado.rol] ?? abogado.rol}
+                  </span>
+                </div>
+                <form action="/api/auth/logout" method="POST">
+                  <button type="submit" className="sidebar-logout">
+                    Salir
+                  </button>
+                </form>
+              </div>
+            )}
+
             <div className="sidebar-meta">
-              <span>Stack: Vercel · Railway · n8n · Supabase</span>
-              <span>Normativa UX inspirada en guía Garrigues</span>
+              <span>Vercel · Railway · n8n · Supabase</span>
             </div>
           </aside>
 

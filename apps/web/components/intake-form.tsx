@@ -138,7 +138,6 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
  headers: { "content-type": "application/json" },
  body: JSON.stringify({
  expediente_id: expedienteId,
- uploaded_by: "fiscalista.demo",
  documents,
  }),
  });
@@ -199,6 +198,7 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
  <option value="PICTET">Pictet</option>
  <option value="GOLDMAN_SACHS">Goldman Sachs</option>
  <option value="CITI">Citi</option>
+ <option value="JPMORGAN">J.P. Morgan</option>
  </select>
 
  <button

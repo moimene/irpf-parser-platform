@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { dbTables } from "@/lib/db-tables";
 import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createSupabaseServerClient } from "@/lib/supabase-auth";
 import { detectBlockedLosses, type TradeEvent, type AssetKind } from "@/lib/rules-core";
 
 const reviewActionSchema = z.object({
   action: z.enum(["approve", "reject", "request_correction"]),
-  reviewer: z.string().optional().default("fiscalista.demo"),
+  reviewer: z.string().optional(),
   notes: z.string().optional(),
   corrected_fields: z.record(z.string(), z.unknown()).optional(),
 });
@@ -52,6 +53,13 @@ export async function PATCH(
     return NextResponse.json({ error: "Supabase no configurado" }, { status: 500 });
   }
 
+  // Obtener el usuario autenticado
+  const serverClient = await createSupabaseServerClient();
+  const { data: { user } } = await serverClient.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = reviewActionSchema.safeParse(body);
   if (!parsed.success) {
@@ -61,7 +69,8 @@ export async function PATCH(
     );
   }
 
-  const { action, reviewer, notes, corrected_fields } = parsed.data;
+  const { action, notes, corrected_fields } = parsed.data;
+  const reviewer = user.email ?? user.id;
   const extractionId = params.extraction_id;
 
   // Verificar que la extracción existe

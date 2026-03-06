@@ -89,7 +89,7 @@ export function ReviewBoard() {
  const res = await fetch(`/api/review/${extraction_id}`, {
  method: "PATCH",
  headers: { "content-type": "application/json" },
- body: JSON.stringify({ action, reviewer: "fiscalista.demo" }),
+ body: JSON.stringify({ action }),
  });
  const result = (await res.json()) as ReviewActionResult;
  setActionResults((prev) => ({ ...prev, [documentId]: result }));
