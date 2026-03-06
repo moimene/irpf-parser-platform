@@ -96,12 +96,34 @@ function LoginForm() {
         </button>
       </form>
 
-      <p className="login-footer">
-        Acceso restringido a personal autorizado del despacho.
-        <br />
-        Para solicitar acceso contacte con el administrador del sistema.
-      </p>
-    </div>
+        <div className="login-test-credentials">
+          <p className="login-test-label">Acceso de demostración</p>
+          <div className="login-test-row">
+            <span className="login-test-field">Usuario</span>
+            <code className="login-test-value">demo@irpf-parser.dev</code>
+          </div>
+          <div className="login-test-row">
+            <span className="login-test-field">Contraseña</span>
+            <code className="login-test-value">Demo2025!</code>
+          </div>
+          <button
+            type="button"
+            className="login-test-fill"
+            onClick={() => {
+              setEmail("demo@irpf-parser.dev");
+              setPassword("Demo2025!");
+            }}
+          >
+            Usar credenciales de demo
+          </button>
+        </div>
+
+        <p className="login-footer">
+          Acceso restringido a personal autorizado del despacho.
+          <br />
+          Para solicitar acceso contacte con el administrador del sistema.
+        </p>
+      </div>
   );
 }
 
@@ -165,6 +187,54 @@ export default function LoginPage() {
         .login-submit {
           width: 100%;
           margin-top: 0.5rem;
+        }
+        .login-test-credentials {
+          margin-top: 1.75rem;
+          border-top: 1px solid var(--color-border, #d8d4cc);
+          padding-top: 1.25rem;
+        }
+        .login-test-label {
+          font-size: 0.7rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--color-muted, #888);
+          margin: 0 0 0.75rem;
+        }
+        .login-test-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 0.4rem;
+          font-size: 0.82rem;
+        }
+        .login-test-field {
+          color: var(--color-muted, #888);
+        }
+        .login-test-value {
+          font-family: 'Courier New', monospace;
+          font-size: 0.82rem;
+          background: #f5f4f0;
+          padding: 2px 6px;
+          border: 1px solid #e2ddd6;
+          color: var(--color-text, #1a1a1a);
+          user-select: all;
+        }
+        .login-test-fill {
+          margin-top: 0.75rem;
+          width: 100%;
+          padding: 0.45rem 0;
+          font-size: 0.8rem;
+          font-family: 'Montserrat', sans-serif;
+          font-weight: 500;
+          background: transparent;
+          border: 1px solid var(--color-border, #d8d4cc);
+          color: var(--color-primary, #004438);
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .login-test-fill:hover {
+          background: #f5f4f0;
         }
         .login-footer {
           margin-top: 1.5rem;
