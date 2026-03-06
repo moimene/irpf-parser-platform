@@ -42,7 +42,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 Clientes
               </Link>
               <Link href="/review" className="sidebar-link">
-                Revisión manual
+                Revision manual
+              </Link>
+              <Link href="/configuracion" className="sidebar-link">
+                Configuracion
               </Link>
             </nav>
 
