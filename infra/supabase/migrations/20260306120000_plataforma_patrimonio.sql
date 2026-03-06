@@ -180,7 +180,7 @@ select
   count(distinct e.id)                          as num_expedientes,
   count(distinct d.id)                          as num_documentos,
   count(distinct d.id) filter (
-    where d.status = 'manual.review.required'
+    where d.manual_review_required = true
   )                                             as pendientes_revision,
   count(distinct p.id)                          as num_registros_patrimonio,
   max(d.created_at)                             as ultimo_documento,
