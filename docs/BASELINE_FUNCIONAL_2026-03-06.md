@@ -462,3 +462,47 @@ Validacion ejecutada:
 - Sigue pendiente la siguiente slice de producto:
   - CRUD manual sobre activos/eventos canonicos,
   - y edicion declarativa directa para `714` / `720` / `IP`.
+
+## Actualizacion 2026-03-08 catalogo granular de operaciones de capital
+
+- `infra/supabase/migrations/20260307233000_irpf_capital_operation_catalog.sql` introduce `irpf_cat_capital_operation_types` y amplia `irpf_asset_fiscal_events` con:
+  - `capital_operation_key`,
+  - `irpf_group`,
+  - `irpf_subgroup`,
+  - `expense_amount_eur`,
+  - `original_currency`,
+  - `gross_amount_original`,
+  - `fx_rate`,
+  - `unit_price_eur`,
+  - `is_closing_operation`,
+  - `is_stock_dividend`,
+  - `irpf_box_code`.
+- La base de datos valida ya la compatibilidad `operacion <-> tipo de bien` mediante trigger:
+  - cuentas `C`,
+  - valores `V`,
+  - IIC `I`,
+  - seguros `S`,
+  - inmuebles `B`,
+  - bienes muebles `M`.
+- `apps/web/lib/canonical-registry.ts` y `services/parser/app/canonical_registry.py` dejan de emitir solo `DIVIDEND` / `INTEREST` / `RENT` y pasan a proyectar tambien claves como:
+  - `DIVIDENDO_ACCION`,
+  - `INTERES_CUENTA`,
+  - `COMPRA_FONDO`,
+  - `VENTA_VALOR`,
+  - `RENTA_VITALICIA`,
+  - `ALQUILER_INMUEBLE`,
+  - `RETENCION_MANUAL`.
+- El expediente ya muestra esa semantica ampliada en eventos canonicos para que revision y alta manual trabajen sobre el mismo vocabulario que luego alimenta `IRPF`, `714` y `720`.
+- El catalogo de bienes muebles se amplia para reflejar mejor el libro oficial del 720:
+  - concesiones administrativas,
+  - opciones contractuales,
+  - propiedad industrial / intelectual,
+  - bienes muebles matriculados,
+  - bienes muebles situados,
+  - manteniendo `COLLECTION` por compatibilidad con datos previos.
+- Validacion ejecutada en esta slice:
+  - `cd services/parser && uv run pytest tests/test_parser_engine.py` -> `4 passed`
+  - `npm run typecheck`
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd apps/web && npx playwright test e2e/asset-registry.spec.ts e2e/canonical-registry.spec.ts` -> `4 passed`

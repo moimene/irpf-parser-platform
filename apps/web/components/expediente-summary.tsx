@@ -176,6 +176,9 @@ type ExpedienteFiscalEvent = {
     | "LOSS"
     | "ADJUSTMENT";
   event_date: string;
+  capital_operation_key: string | null;
+  irpf_group: "RCM" | "GYP" | "OTRO" | null;
+  irpf_subgroup: string | null;
   quantity: number | null;
   gross_amount_eur: number | null;
   net_amount_eur: number | null;
@@ -184,6 +187,14 @@ type ExpedienteFiscalEvent = {
   cost_basis_amount_eur: number | null;
   realized_result_eur: number | null;
   currency: string | null;
+  expense_amount_eur: number | null;
+  original_currency: string | null;
+  gross_amount_original: number | null;
+  fx_rate: number | null;
+  unit_price_eur: number | null;
+  is_closing_operation: boolean | null;
+  is_stock_dividend: boolean | null;
+  irpf_box_code: string | null;
   source: string;
   notes: string | null;
 };
@@ -715,6 +726,16 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                       </td>
                       <td>
                         <span className={badgeClass(event.event_type)}>{event.event_type}</span>
+                        {event.capital_operation_key ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            {event.capital_operation_key}
+                          </div>
+                        ) : null}
+                        {event.irpf_group || event.irpf_subgroup ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            {[event.irpf_group, event.irpf_subgroup].filter(Boolean).join(" · ")}
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         <strong>{linkedAsset?.display_name ?? "Activo no enlazado"}</strong>
@@ -729,14 +750,45 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                             Ret. {formatCurrency(event.withholding_amount_eur, event.currency)}
                           </div>
                         ) : null}
+                        {event.expense_amount_eur !== null ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Gastos {formatCurrency(event.expense_amount_eur, event.currency)}
+                          </div>
+                        ) : null}
                         {event.realized_result_eur !== null ? (
                           <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
                             Resultado {formatCurrency(event.realized_result_eur, event.currency)}
                           </div>
                         ) : null}
+                        {event.unit_price_eur !== null ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Precio unit. {formatCurrency(event.unit_price_eur, "EUR")}
+                          </div>
+                        ) : null}
+                        {event.gross_amount_original !== null && event.original_currency ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Original {formatCurrency(event.gross_amount_original, event.original_currency)}
+                            {event.fx_rate !== null ? ` · FX ${formatNumber(event.fx_rate, 6)}` : ""}
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         <span className="badge">{event.source}</span>
+                        {event.is_closing_operation ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Cierre de posicion
+                          </div>
+                        ) : null}
+                        {event.is_stock_dividend ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Dividendo en acciones
+                          </div>
+                        ) : null}
+                        {event.irpf_box_code ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Casilla {event.irpf_box_code}
+                          </div>
+                        ) : null}
                         {event.notes ? (
                           <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
                             {event.notes}

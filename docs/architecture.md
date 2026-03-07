@@ -30,11 +30,11 @@
   - `Docling` como candidato para `PDF/DOCX/IMAGE` en la capa documental por OCR, tablas y representación estructurada.
   - El LLM debe quedar restringido a clasificación semántica y mapping de columnas/campos dentro de un schema cerrado.
 
-## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`, `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`)
+## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`, `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`, `infra/supabase/migrations/20260307233000_irpf_capital_operation_catalog.sql`)
 
 - Tablas runtime operativas: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_fiscal_adjustments`, `irpf_lots`, `irpf_sale_allocations`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
 - Registro canonico de dominio introducido para `714`/`720`/`IP`: `irpf_declaration_profiles`, `irpf_asset_registry`, `irpf_asset_accounts`, `irpf_asset_securities`, `irpf_asset_collective_investments`, `irpf_asset_insurances`, `irpf_asset_real_estate`, `irpf_asset_movable_goods`, `irpf_asset_fiscal_events`
-- Catalogos maestros nuevos: pais, situacion del bien, territorio fiscal, condicion del declarante, tipo/subclave de bien, origen, identificacion/representacion, tipo de inmueble y tipo de bien mueble
+- Catalogos maestros nuevos: pais, situacion del bien, territorio fiscal, condicion del declarante, tipo/subclave de bien, origen, identificacion/representacion, tipo de inmueble, tipo de bien mueble y catalogo granular de operaciones de capital
 - El esquema rico inicial de `0001_init.sql` existe como antecedente de diseño, pero no es la base operativa actual
 
 ## Decision de dominio
@@ -45,7 +45,10 @@
   - perfil de declaracion,
   - registro de bienes y derechos,
   - tablas especificas por tipologia,
-  - y eventos fiscales de rendimientos/transmisiones/retenciones.
+  - eventos fiscales de rendimientos/transmisiones/retenciones,
+  - con doble nivel de semantica:
+    - `event_type` de alto nivel para runtime y vistas agregadas,
+    - `capital_operation_key` para clasificacion IRPF/AEAT, validacion por tipo de bien y edicion manual detallada.
 - Las `entity templates` dejan de ser modelo de negocio; son solo adapters de extraccion.
 - `714` y `720` deben leer del registro canonico y solo mantener fallback temporal a `irpf_operations` mientras se migra la captura.
 
@@ -106,6 +109,26 @@ Nueva capacidad operativa del registro canonico:
 - `apps/web/lib/asset-registry-store.ts` consolida lectura de perfil declarativo, activos y eventos fiscales desde Supabase.
 - `GET /api/expedientes/:id` ya expone esa capa canonica como parte del payload principal de expediente.
 - `apps/web/components/expediente-summary.tsx` consume directamente el registro canonico para visibilidad operativa de despacho.
+- `irpf_asset_fiscal_events` deja de ser una tabla plana de importes y añade:
+  - `capital_operation_key`,
+  - `irpf_group`,
+  - `irpf_subgroup`,
+  - importe original, divisa original, `fx_rate`,
+  - gastos,
+  - `unit_price_eur`,
+  - y flags de cierre / dividendo en acciones.
+- La base valida ya `operacion de capital <-> tipo de bien` con trigger antes de persistir:
+  - un interes de cuenta solo casa con `C`,
+  - una compra/venta de fondo con `I`,
+  - un rendimiento de seguro con `S`,
+  - y alquiler/transmision con `B` o `M` segun el caso.
+- El catalogo de bienes muebles se amplia para cubrir mejor el libro oficial del 720:
+  - concesiones administrativas,
+  - opciones contractuales,
+  - propiedad industrial / intelectual,
+  - bienes muebles matriculados,
+  - bienes muebles situados,
+  - manteniendo compatibilidad retroactiva con `COLLECTION`.
 - La siguiente frontera ya no es de lectura sino de mutacion:
   - altas manuales,
   - correcciones manuales,

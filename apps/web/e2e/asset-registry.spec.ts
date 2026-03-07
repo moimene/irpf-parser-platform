@@ -65,16 +65,34 @@ test.describe("asset registry serializers", () => {
       document_id: "doc-1",
       event_type: "DIVIDEND",
       event_date: "2025-02-01",
+      capital_operation_key: "DIVIDENDO_ACCION",
+      irpf_group: "RCM",
+      irpf_subgroup: "DIVIDENDOS",
       gross_amount_eur: 150.45,
       withholding_amount_eur: 22.57,
+      expense_amount_eur: 1.25,
+      gross_amount_original: 164.32,
+      original_currency: "usd",
+      fx_rate: 1.0915,
       currency: "usd",
+      is_stock_dividend: true,
+      irpf_box_code: "0029",
       notes: "  dividendo trimestral  "
     });
 
     expect(event.asset_id).toBe("asset-1");
+    expect(event.capital_operation_key).toBe("DIVIDENDO_ACCION");
+    expect(event.irpf_group).toBe("RCM");
+    expect(event.irpf_subgroup).toBe("DIVIDENDOS");
     expect(event.gross_amount_eur).toBe(150.45);
     expect(event.withholding_amount_eur).toBe(22.57);
+    expect(event.expense_amount_eur).toBe(1.25);
+    expect(event.gross_amount_original).toBe(164.32);
+    expect(event.original_currency).toBe("USD");
+    expect(event.fx_rate).toBe(1.0915);
     expect(event.currency).toBe("USD");
+    expect(event.is_stock_dividend).toBe(true);
+    expect(event.irpf_box_code).toBe("0029");
     expect(event.notes).toBe("dividendo trimestral");
   });
 });

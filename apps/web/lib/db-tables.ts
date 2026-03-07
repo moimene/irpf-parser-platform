@@ -8,6 +8,7 @@ export const dbTables = {
   operations: "irpf_operations",
   declarationProfiles: "irpf_declaration_profiles",
   assetRegistry: "irpf_asset_registry",
+  capitalOperationTypes: "irpf_cat_capital_operation_types",
   assetAccounts: "irpf_asset_accounts",
   assetSecurities: "irpf_asset_securities",
   assetCollectiveInvestments: "irpf_asset_collective_investments",

@@ -5,6 +5,9 @@ import { dbTables } from "@/lib/db-tables";
 type JsonObject = Record<string, unknown>;
 type CanonicalSource = "AUTO" | "MANUAL" | "IMPORTACION_EXCEL" | "RUNTIME";
 type AssetClass = CanonicalAssetRecord["asset_class"];
+type CapitalOperationKey = CanonicalFiscalEvent["capital_operation_key"];
+type CapitalOperationGroup = CanonicalFiscalEvent["irpf_group"];
+type MovableKind = NonNullable<NonNullable<CanonicalAssetRecord["movable"]>["movable_kind"]>;
 
 const explicitAssetRecordTypes = new Set<ParsedRecord["record_type"]>([
   "CUENTA",
@@ -194,6 +197,256 @@ function defaultAssetSubkey(assetClass: AssetClass, fields: JsonObject): string 
   }
 }
 
+function normalizeUppercaseValue(value: string | null | undefined): string | null {
+  return value?.trim().toUpperCase() || null;
+}
+
+function normalizeMovableKind(rawValue: string | null | undefined): MovableKind {
+  const normalized = normalizeUppercaseValue(rawValue)?.replace(/[\s-]+/g, "_");
+  switch (normalized) {
+    case "A":
+    case "ART":
+    case "ARTWORK":
+    case "OBJETOS_DE_ARTE":
+      return "ART";
+    case "J":
+    case "JEWELRY":
+    case "JOYAS":
+      return "JEWELRY";
+    case "V":
+    case "VEHICLE":
+    case "VEHICULO":
+    case "VEHICULOS":
+      return "VEHICLE";
+    case "E":
+    case "BOAT":
+    case "EMBARCACION":
+    case "EMBARCACIONES_Y_AERONAVES":
+      return "BOAT";
+    case "AIRCRAFT":
+    case "AERONAVE":
+      return "AIRCRAFT";
+    case "COLLECTION":
+    case "COLECCION":
+      return "COLLECTION";
+    case "C":
+    case "ADMINISTRATIVE_CONCESSION":
+    case "CONCESION_ADMINISTRATIVA":
+      return "ADMINISTRATIVE_CONCESSION";
+    case "N":
+    case "CONTRACT_OPTION":
+    case "OPCION_CONTRACTUAL":
+      return "CONTRACT_OPTION";
+    case "D":
+    case "INTELLECTUAL_PROPERTY":
+    case "DERECHO_PROPIEDAD_INTELECTUAL":
+    case "DERECHO_PROPIEDAD_INDUSTRIAL":
+      return "INTELLECTUAL_PROPERTY";
+    case "R":
+    case "REGISTERED_MOVABLE":
+    case "MUEBLE_MATRICULADO":
+      return "REGISTERED_MOVABLE";
+    case "M":
+    case "LOCATED_MOVABLE":
+    case "MUEBLE_SITUADO":
+      return "LOCATED_MOVABLE";
+    case "GENERAL":
+      return "GENERAL";
+    default:
+      return "OTHER";
+  }
+}
+
+const capitalOperationCatalog: Record<
+  NonNullable<CapitalOperationKey>,
+  { irpfGroup: NonNullable<CapitalOperationGroup>; irpfSubgroup: string }
+> = {
+  DIVIDENDO_ACCION: { irpfGroup: "RCM", irpfSubgroup: "DIVIDENDOS" },
+  DIVIDENDO_FONDO: { irpfGroup: "RCM", irpfSubgroup: "DIVIDENDOS" },
+  INTERES_CUENTA: { irpfGroup: "RCM", irpfSubgroup: "INTERESES" },
+  INTERES_BONO: { irpfGroup: "RCM", irpfSubgroup: "INTERESES" },
+  CUPON_BONO: { irpfGroup: "RCM", irpfSubgroup: "INTERESES" },
+  REND_SEGURO_VIDA: { irpfGroup: "RCM", irpfSubgroup: "SEGUROS" },
+  RENTA_VITALICIA: { irpfGroup: "RCM", irpfSubgroup: "RENTAS" },
+  COMPRA_VALOR: { irpfGroup: "GYP", irpfSubgroup: "ACCIONES" },
+  VENTA_VALOR: { irpfGroup: "GYP", irpfSubgroup: "ACCIONES" },
+  COMPRA_FONDO: { irpfGroup: "GYP", irpfSubgroup: "FONDOS" },
+  VENTA_FONDO: { irpfGroup: "GYP", irpfSubgroup: "FONDOS" },
+  ALQUILER_INMUEBLE: { irpfGroup: "RCM", irpfSubgroup: "INMUEBLES" },
+  COMPRA_INMUEBLE: { irpfGroup: "GYP", irpfSubgroup: "INMUEBLES" },
+  VENTA_INMUEBLE: { irpfGroup: "GYP", irpfSubgroup: "INMUEBLES" },
+  COMPRA_BIEN_MUEBLE: { irpfGroup: "GYP", irpfSubgroup: "BIENES_MUEBLES" },
+  VENTA_BIEN_MUEBLE: { irpfGroup: "GYP", irpfSubgroup: "BIENES_MUEBLES" },
+  RETENCION_MANUAL: { irpfGroup: "RCM", irpfSubgroup: "RETENCIONES" },
+  OTRO_MOVIMIENTO: { irpfGroup: "OTRO", irpfSubgroup: "OTRO" }
+};
+
+function inferAssetKeyForEvent(
+  recordType: ParsedRecord["record_type"],
+  linkedAsset: CanonicalAssetRecord | null,
+  fields: JsonObject
+): CanonicalAssetRecord["asset_key"] | null {
+  const explicitAssetKey = readString(fields, "asset_key") as CanonicalAssetRecord["asset_key"] | null;
+  if (explicitAssetKey) {
+    return explicitAssetKey;
+  }
+
+  if (linkedAsset) {
+    return linkedAsset.asset_key;
+  }
+
+  if (recordType === "INTERES" && (readString(fields, "account_code") || readString(fields, "bic"))) {
+    return "C";
+  }
+
+  if (recordType === "RENTA") {
+    if (readString(fields, "insurance_kind")) {
+      return "S";
+    }
+    if (
+      readString(fields, "real_estate_type_key") ||
+      readString(fields, "clave_tipo_inmueble") ||
+      readString(fields, "cadastral_reference")
+    ) {
+      return "B";
+    }
+    if (
+      readString(fields, "movable_kind") ||
+      readString(fields, "clave_tipo_bien_mueble") ||
+      readString(fields, "clave_tipo_inmueble_mueble")
+    ) {
+      return "M";
+    }
+  }
+
+  if (readString(fields, "isin") || readString(fields, "security_identifier")) {
+    return "V";
+  }
+
+  return null;
+}
+
+function defaultCapitalOperationKey(
+  eventType: CanonicalFiscalEvent["event_type"],
+  assetKey: CanonicalAssetRecord["asset_key"] | null,
+  fields: JsonObject
+): NonNullable<CapitalOperationKey> {
+  const explicitKey = readString(fields, "capital_operation_key") as CapitalOperationKey;
+  if (explicitKey) {
+    return explicitKey;
+  }
+
+  switch (eventType) {
+    case "ACQUISITION":
+      switch (assetKey) {
+        case "I":
+          return "COMPRA_FONDO";
+        case "B":
+          return "COMPRA_INMUEBLE";
+        case "M":
+          return "COMPRA_BIEN_MUEBLE";
+        default:
+          return "COMPRA_VALOR";
+      }
+    case "DISPOSAL":
+      switch (assetKey) {
+        case "I":
+          return "VENTA_FONDO";
+        case "B":
+          return "VENTA_INMUEBLE";
+        case "M":
+          return "VENTA_BIEN_MUEBLE";
+        default:
+          return "VENTA_VALOR";
+      }
+    case "DIVIDEND":
+      return assetKey === "I" ? "DIVIDENDO_FONDO" : "DIVIDENDO_ACCION";
+    case "INTEREST":
+      return readBoolean(fields, "is_coupon") || readString(fields, "coupon_type")
+        ? "CUPON_BONO"
+        : assetKey === "V"
+          ? "INTERES_BONO"
+          : "INTERES_CUENTA";
+    case "RENT":
+      if (assetKey === "S") {
+        return readString(fields, "insurance_kind")?.includes("LIFE") ? "REND_SEGURO_VIDA" : "RENTA_VITALICIA";
+      }
+      return assetKey === "B" ? "ALQUILER_INMUEBLE" : "OTRO_MOVIMIENTO";
+    case "WITHHOLDING":
+      return "RETENCION_MANUAL";
+    default:
+      return "OTRO_MOVIMIENTO";
+  }
+}
+
+function deriveOperationAmounts(
+  eventType: CanonicalFiscalEvent["event_type"],
+  fields: JsonObject
+): Pick<
+  CanonicalFiscalEvent,
+  | "gross_amount_eur"
+  | "net_amount_eur"
+  | "withholding_amount_eur"
+  | "proceeds_amount_eur"
+  | "cost_basis_amount_eur"
+  | "realized_result_eur"
+  | "expense_amount_eur"
+  | "gross_amount_original"
+  | "fx_rate"
+  | "unit_price_eur"
+> {
+  const amount =
+    readNumber(fields, "gross_amount_eur") ??
+    readNumber(fields, "amount");
+  const retention =
+    readNumber(fields, "withholding_amount_eur") ??
+    readNumber(fields, "retention");
+  const expenseAmount =
+    readNumber(fields, "expense_amount_eur") ??
+    readNumber(fields, "fees") ??
+    readNumber(fields, "gastos");
+  const quantity = readNumber(fields, "quantity");
+  const proceedsAmount =
+    readNumber(fields, "proceeds_amount_eur") ??
+    (eventType === "DISPOSAL" ? amount : null);
+  const unitPrice =
+    readNumber(fields, "unit_price_eur") ??
+    readNumber(fields, "price_unit_eur") ??
+    readNumber(fields, "precio_unitario_eur") ??
+    ((eventType === "ACQUISITION" || eventType === "DISPOSAL") &&
+    quantity !== null &&
+    quantity > 0 &&
+    amount !== null
+      ? amount / quantity
+      : null);
+  const grossAmount =
+    eventType === "WITHHOLDING"
+      ? null
+      : amount;
+
+  return {
+    gross_amount_eur: grossAmount,
+    net_amount_eur:
+      grossAmount !== null
+        ? grossAmount - (retention ?? 0) - (expenseAmount ?? 0)
+        : null,
+    withholding_amount_eur: eventType === "WITHHOLDING" ? amount : retention,
+    proceeds_amount_eur: proceedsAmount,
+    cost_basis_amount_eur: readNumber(fields, "cost_basis_amount_eur"),
+    realized_result_eur:
+      readNumber(fields, "realized_result_eur") ??
+      readNumber(fields, "realized_gain"),
+    expense_amount_eur: expenseAmount,
+    gross_amount_original:
+      readNumber(fields, "gross_amount_original") ??
+      readNumber(fields, "amount_original"),
+    fx_rate:
+      readNumber(fields, "fx_rate") ??
+      readNumber(fields, "tipo_cambio"),
+    unit_price_eur: unitPrice
+  };
+}
+
 function deriveImplicitAssetFromRecord(
   record: ParsedRecord | Record<string, unknown>
 ): CanonicalAssetRecord | null {
@@ -337,9 +590,11 @@ function deriveImplicitAssetFromRecord(
     };
   } else if (assetClass === "MOVABLE_ASSET") {
     next.movable = {
-      movable_kind:
-        (readString(fields, "movable_kind") as CanonicalAssetRecord["movable"] extends { movable_kind?: infer T } ? T : never) ??
-        "OTHER",
+      movable_kind: normalizeMovableKind(
+        readString(fields, "movable_kind") ??
+          readString(fields, "clave_tipo_bien_mueble") ??
+          readString(fields, "clave_tipo_inmueble_mueble")
+      ),
       registry_reference:
         readString(fields, "registry_reference") ??
         readString(fields, "referencia_registro"),
@@ -365,7 +620,17 @@ function deriveImplicitAssetFromEventRecord(
     ? ((record as Record<string, unknown>).fields as JsonObject)
     : {};
 
-  if (!readString(fields, "isin") && !readString(fields, "security_identifier") && !readString(fields, "description")) {
+  if (
+    !readString(fields, "isin") &&
+    !readString(fields, "security_identifier") &&
+    !readString(fields, "account_code") &&
+    !readString(fields, "description") &&
+    !readString(fields, "insurance_kind") &&
+    !readString(fields, "real_estate_type_key") &&
+    !readString(fields, "clave_tipo_inmueble") &&
+    !readString(fields, "movable_kind") &&
+    !readString(fields, "clave_tipo_bien_mueble")
+  ) {
     return null;
   }
 
@@ -376,14 +641,34 @@ function deriveImplicitAssetFromEventRecord(
     readString(fields, "location_key") ?? readString(fields, "clave_situacion"),
     countryCode
   );
-  const assetClass: AssetClass =
-    recordType === "INTERES" && readString(fields, "account_code") ? "ACCOUNT" : "SECURITY";
+  const inferredAssetKey = inferAssetKeyForEvent(recordType, null, fields);
+  let assetClass: AssetClass = "SECURITY";
+  switch (inferredAssetKey) {
+    case "C":
+      assetClass = "ACCOUNT";
+      break;
+    case "I":
+      assetClass = "COLLECTIVE_INVESTMENT";
+      break;
+    case "S":
+      assetClass = "INSURANCE";
+      break;
+    case "B":
+      assetClass = "REAL_ESTATE";
+      break;
+    case "M":
+      assetClass = "MOVABLE_ASSET";
+      break;
+    default:
+      assetClass = "SECURITY";
+      break;
+  }
 
   const asset: CanonicalAssetRecord = {
     asset_class: assetClass,
     condition_key: "1",
-    asset_key: assetClass === "ACCOUNT" ? "C" : "V",
-    asset_subkey: assetClass === "ACCOUNT" ? "5" : "1",
+    asset_key: defaultAssetKey(assetClass),
+    asset_subkey: defaultAssetSubkey(assetClass, fields),
     country_code: countryCode,
     location_key: locationKey,
     incorporation_date: normalizeDate(
@@ -409,7 +694,7 @@ function deriveImplicitAssetFromEventRecord(
       account_code: readString(fields, "account_code"),
       entity_tax_id: readString(fields, "entity_tax_id")
     };
-  } else {
+  } else if (assetClass === "SECURITY") {
     asset.security = {
       identification_key: readString(fields, "isin") ? "1" : "2",
       security_identifier:
@@ -421,6 +706,56 @@ function deriveImplicitAssetFromEventRecord(
       units: readNumber(fields, "quantity"),
       listed: true,
       regulated: true
+    };
+  } else if (assetClass === "COLLECTIVE_INVESTMENT") {
+    asset.collective_investment = {
+      identification_key: readString(fields, "isin") ? "1" : "2",
+      security_identifier:
+        readString(fields, "security_identifier") ??
+        readString(fields, "isin") ??
+        readString(fields, "description"),
+      entity_tax_id: readString(fields, "entity_tax_id"),
+      representation_key: "A",
+      units: readNumber(fields, "quantity"),
+      listed: null,
+      regulated: readBoolean(fields, "regulated") ?? true
+    };
+  } else if (assetClass === "INSURANCE") {
+    asset.insurance = {
+      insurance_kind:
+        (readString(fields, "insurance_kind") as CanonicalAssetRecord["insurance"] extends {
+          insurance_kind?: infer T;
+        }
+          ? T
+          : never) ?? "LIFE",
+      entity_tax_id: readString(fields, "entity_tax_id")
+    };
+  } else if (assetClass === "REAL_ESTATE") {
+    asset.real_estate = {
+      real_estate_type_key:
+        (readString(fields, "real_estate_type_key") as "U" | "R" | null) ??
+        (readString(fields, "clave_tipo_inmueble") as "U" | "R" | null) ??
+        "U",
+      real_right_description:
+        readString(fields, "real_right_description") ??
+        readString(fields, "tipo_derecho_real"),
+      cadastral_reference:
+        readString(fields, "cadastral_reference") ??
+        readString(fields, "referencia_catastral")
+    };
+  } else if (assetClass === "MOVABLE_ASSET") {
+    asset.movable = {
+      movable_kind: normalizeMovableKind(
+        readString(fields, "movable_kind") ??
+          readString(fields, "clave_tipo_bien_mueble") ??
+          readString(fields, "clave_tipo_inmueble_mueble")
+      ),
+      registry_reference:
+        readString(fields, "registry_reference") ??
+        readString(fields, "referencia_registro"),
+      valuation_method:
+        readString(fields, "valuation_method") ??
+        readString(fields, "metodo_valoracion")
     };
   }
 
@@ -449,7 +784,7 @@ function eventTypeFromRecordType(recordType: ParsedRecord["record_type"]): Canon
 
 function deriveFiscalEventFromRecord(
   record: ParsedRecord | Record<string, unknown>,
-  assetLinkKey: string | null
+  linkedAsset: CanonicalAssetRecord | null
 ): CanonicalFiscalEvent | null {
   const recordType = String((record as Record<string, unknown>).record_type ?? "") as ParsedRecord["record_type"];
   const eventType = eventTypeFromRecordType(recordType);
@@ -460,29 +795,44 @@ function deriveFiscalEventFromRecord(
   const fields = isObject((record as Record<string, unknown>).fields)
     ? ((record as Record<string, unknown>).fields as JsonObject)
     : {};
-  const amount = readNumber(fields, "amount");
-  const retention = readNumber(fields, "retention");
+  const assetKey = inferAssetKeyForEvent(recordType, linkedAsset, fields);
+  const capitalOperationKey = defaultCapitalOperationKey(eventType, assetKey, fields);
+  const catalogEntry = capitalOperationCatalog[capitalOperationKey];
+  const derivedAmounts = deriveOperationAmounts(eventType, fields);
+  const currency = normalizeUppercaseValue(readString(fields, "currency"));
+  const originalCurrency =
+    normalizeUppercaseValue(readString(fields, "original_currency")) ??
+    (derivedAmounts.gross_amount_original !== null && derivedAmounts.gross_amount_original !== undefined
+      ? currency
+      : null);
 
   return {
-    asset_link_key: assetLinkKey,
+    asset_link_key: linkedAsset?.asset_link_key ?? null,
     event_type: eventType,
     event_date: normalizeDate(
       readString(fields, "event_date") ??
         readString(fields, "operation_date") ??
         readString(fields, "incorporation_date")
     ),
+    capital_operation_key: capitalOperationKey,
+    irpf_group: catalogEntry.irpfGroup,
+    irpf_subgroup: catalogEntry.irpfSubgroup,
     quantity: readNumber(fields, "quantity"),
-    gross_amount_eur: eventType === "WITHHOLDING" ? null : amount,
-    net_amount_eur:
-      amount !== null && retention !== null && eventType !== "WITHHOLDING" ? amount - retention : amount,
-    withholding_amount_eur:
-      eventType === "WITHHOLDING" ? amount : retention,
-    proceeds_amount_eur: eventType === "DISPOSAL" ? amount : null,
-    cost_basis_amount_eur: readNumber(fields, "cost_basis_amount_eur"),
-    realized_result_eur:
-      readNumber(fields, "realized_result_eur") ??
-      readNumber(fields, "realized_gain"),
-    currency: readString(fields, "currency"),
+    gross_amount_eur: derivedAmounts.gross_amount_eur,
+    net_amount_eur: derivedAmounts.net_amount_eur,
+    withholding_amount_eur: derivedAmounts.withholding_amount_eur,
+    proceeds_amount_eur: derivedAmounts.proceeds_amount_eur,
+    cost_basis_amount_eur: derivedAmounts.cost_basis_amount_eur,
+    realized_result_eur: derivedAmounts.realized_result_eur,
+    currency,
+    expense_amount_eur: derivedAmounts.expense_amount_eur,
+    original_currency: originalCurrency,
+    gross_amount_original: derivedAmounts.gross_amount_original,
+    fx_rate: derivedAmounts.fx_rate,
+    unit_price_eur: derivedAmounts.unit_price_eur,
+    is_closing_operation: readBoolean(fields, "is_closing_operation") ?? readBoolean(fields, "es_operacion_cierre") ?? false,
+    is_stock_dividend: readBoolean(fields, "is_stock_dividend") ?? readBoolean(fields, "es_dividendo_en_acciones") ?? false,
+    irpf_box_code: readString(fields, "irpf_box_code") ?? readString(fields, "codigo_irpf_casilla"),
     notes: readString(fields, "description")
   };
 }
@@ -520,6 +870,77 @@ function normalizeCanonicalAssetRecord(value: unknown): CanonicalAssetRecord | n
     tax_territory_code: readString(value, "tax_territory_code") ?? "ES-COMUN",
     ownership_type_description: readString(value, "ownership_type_description"),
     extinction_date: readString(value, "extinction_date"),
+    address: isObject(value.address)
+      ? {
+          street_line: readString(value.address, "street_line"),
+          complement: readString(value.address, "complement"),
+          city: readString(value.address, "city"),
+          region: readString(value.address, "region"),
+          postal_code: readString(value.address, "postal_code"),
+          country_code: normalizeUppercaseValue(readString(value.address, "country_code"))
+        }
+      : null,
+    account: isObject(value.account)
+      ? {
+          account_identification_key:
+            (readString(value.account, "account_identification_key") as "I" | "O" | null) ?? null,
+          bic: readString(value.account, "bic"),
+          account_code: readString(value.account, "account_code"),
+          entity_tax_id: readString(value.account, "entity_tax_id")
+        }
+      : null,
+    security: isObject(value.security)
+      ? {
+          identification_key:
+            (readString(value.security, "identification_key") as "1" | "2" | null) ?? null,
+          security_identifier: readString(value.security, "security_identifier"),
+          entity_tax_id: readString(value.security, "entity_tax_id"),
+          representation_key:
+            (readString(value.security, "representation_key") as "A" | "B" | null) ?? null,
+          units: readNumber(value.security, "units"),
+          listed: readBoolean(value.security, "listed"),
+          regulated: readBoolean(value.security, "regulated")
+        }
+      : null,
+    collective_investment: isObject(value.collective_investment)
+      ? {
+          identification_key:
+            (readString(value.collective_investment, "identification_key") as "1" | "2" | null) ?? null,
+          security_identifier: readString(value.collective_investment, "security_identifier"),
+          entity_tax_id: readString(value.collective_investment, "entity_tax_id"),
+          representation_key:
+            (readString(value.collective_investment, "representation_key") as "A" | "B" | null) ?? null,
+          units: readNumber(value.collective_investment, "units"),
+          listed: readBoolean(value.collective_investment, "listed"),
+          regulated: readBoolean(value.collective_investment, "regulated")
+        }
+      : null,
+    insurance: isObject(value.insurance)
+      ? {
+          insurance_kind:
+            (readString(value.insurance, "insurance_kind") as CanonicalAssetRecord["insurance"] extends {
+              insurance_kind?: infer T;
+            }
+              ? T
+              : never) ?? null,
+          entity_tax_id: readString(value.insurance, "entity_tax_id")
+        }
+      : null,
+    real_estate: isObject(value.real_estate)
+      ? {
+          real_estate_type_key:
+            (readString(value.real_estate, "real_estate_type_key") as "U" | "R" | null) ?? null,
+          real_right_description: readString(value.real_estate, "real_right_description"),
+          cadastral_reference: readString(value.real_estate, "cadastral_reference")
+        }
+      : null,
+    movable: isObject(value.movable)
+      ? {
+          movable_kind: normalizeMovableKind(readString(value.movable, "movable_kind")),
+          registry_reference: readString(value.movable, "registry_reference"),
+          valuation_method: readString(value.movable, "valuation_method")
+        }
+      : null,
     metadata: isObject(value.metadata) ? value.metadata : {}
   };
 
@@ -537,11 +958,21 @@ function normalizeCanonicalFiscalEvent(value: unknown): CanonicalFiscalEvent | n
     return null;
   }
 
+  const capitalOperationKey =
+    (readString(value, "capital_operation_key") as CapitalOperationKey) ?? null;
+  const catalogEntry = capitalOperationKey ? capitalOperationCatalog[capitalOperationKey] : null;
+
   return {
     asset_link_key: normalizeAssetLinkKey(readString(value, "asset_link_key")),
     event_type: eventType,
     event_date: normalizeDate(readString(value, "event_date")),
     asset_id: readString(value, "asset_id"),
+    capital_operation_key: capitalOperationKey,
+    irpf_group:
+      (readString(value, "irpf_group") as CapitalOperationGroup | null) ??
+      catalogEntry?.irpfGroup ??
+      null,
+    irpf_subgroup: readString(value, "irpf_subgroup") ?? catalogEntry?.irpfSubgroup ?? null,
     quantity: readNumber(value, "quantity"),
     gross_amount_eur: readNumber(value, "gross_amount_eur"),
     net_amount_eur: readNumber(value, "net_amount_eur"),
@@ -549,7 +980,15 @@ function normalizeCanonicalFiscalEvent(value: unknown): CanonicalFiscalEvent | n
     proceeds_amount_eur: readNumber(value, "proceeds_amount_eur"),
     cost_basis_amount_eur: readNumber(value, "cost_basis_amount_eur"),
     realized_result_eur: readNumber(value, "realized_result_eur"),
-    currency: readString(value, "currency"),
+    currency: normalizeUppercaseValue(readString(value, "currency")),
+    expense_amount_eur: readNumber(value, "expense_amount_eur"),
+    original_currency: normalizeUppercaseValue(readString(value, "original_currency")),
+    gross_amount_original: readNumber(value, "gross_amount_original"),
+    fx_rate: readNumber(value, "fx_rate"),
+    unit_price_eur: readNumber(value, "unit_price_eur"),
+    is_closing_operation: readBoolean(value, "is_closing_operation") ?? false,
+    is_stock_dividend: readBoolean(value, "is_stock_dividend") ?? false,
+    irpf_box_code: readString(value, "irpf_box_code"),
     notes: readString(value, "notes")
   };
 }
@@ -557,12 +996,14 @@ function normalizeCanonicalFiscalEvent(value: unknown): CanonicalFiscalEvent | n
 function eventDedupKey(event: CanonicalFiscalEvent): string {
   return [
     event.event_type,
+    event.capital_operation_key ?? "",
     event.event_date,
     event.asset_link_key ?? "",
     event.quantity ?? "",
     event.gross_amount_eur ?? "",
     event.withholding_amount_eur ?? "",
-    event.realized_result_eur ?? ""
+    event.realized_result_eur ?? "",
+    event.unit_price_eur ?? ""
   ].join("|");
 }
 
@@ -602,7 +1043,7 @@ export function deriveCanonicalRegistryFromParsePayload(input: {
       }
     }
 
-    const event = deriveFiscalEventFromRecord(record, explicitAsset?.asset_link_key ?? null);
+    const event = deriveFiscalEventFromRecord(record, explicitAsset ?? null);
     if (event) {
       const key = eventDedupKey(event);
       if (!derivedEventKeys.has(key)) {
@@ -985,6 +1426,9 @@ export async function replaceDocumentCanonicalRegistry(
     document_id: input.documentId,
     event_type: event.event_type,
     event_date: event.event_date,
+    capital_operation_key: event.capital_operation_key ?? null,
+    irpf_group: event.irpf_group ?? null,
+    irpf_subgroup: event.irpf_subgroup ?? null,
     quantity: event.quantity ?? null,
     gross_amount_eur: event.gross_amount_eur ?? null,
     net_amount_eur: event.net_amount_eur ?? null,
@@ -993,9 +1437,18 @@ export async function replaceDocumentCanonicalRegistry(
     cost_basis_amount_eur: event.cost_basis_amount_eur ?? null,
     realized_result_eur: event.realized_result_eur ?? null,
     currency: event.currency ?? null,
+    expense_amount_eur: event.expense_amount_eur ?? null,
+    original_currency: event.original_currency ?? null,
+    gross_amount_original: event.gross_amount_original ?? null,
+    fx_rate: event.fx_rate ?? null,
+    unit_price_eur: event.unit_price_eur ?? null,
+    is_closing_operation: event.is_closing_operation ?? false,
+    is_stock_dividend: event.is_stock_dividend ?? false,
+    irpf_box_code: event.irpf_box_code ?? null,
     source: input.source,
     origin_trace: {
       asset_link_key: event.asset_link_key ?? null,
+      capital_operation_key: event.capital_operation_key ?? null,
       source_document_id: input.documentId,
       reviewed_by: input.reviewedBy ?? null
     },

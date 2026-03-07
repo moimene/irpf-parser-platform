@@ -25,6 +25,8 @@ def test_template_detects_pictet_dividend() -> None:
     assert response.structured_document.pages
     assert response.fiscal_events
     assert response.fiscal_events[0]["event_type"] == "DIVIDEND"
+    assert response.fiscal_events[0]["capital_operation_key"] == "DIVIDENDO_ACCION"
+    assert response.fiscal_events[0]["irpf_group"] == "RCM"
 
 
 def test_semantic_fallback_requires_manual_when_low_signal() -> None:
@@ -66,6 +68,7 @@ def test_csv_builds_structured_document_and_records() -> None:
     assert response.structured_document.pages[0].tables
     assert response.asset_records
     assert response.fiscal_events
+    assert response.fiscal_events[0]["capital_operation_key"] == "DIVIDENDO_ACCION"
 
 
 def test_xlsx_builds_structured_document_and_records() -> None:
@@ -99,3 +102,4 @@ def test_xlsx_builds_structured_document_and_records() -> None:
     assert response.structured_document.pages[0].tables
     assert response.asset_records
     assert response.fiscal_events
+    assert response.fiscal_events[0]["capital_operation_key"] == "DIVIDENDO_ACCION"

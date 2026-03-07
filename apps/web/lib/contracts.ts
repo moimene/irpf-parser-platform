@@ -141,7 +141,21 @@ export interface CanonicalAssetRecord {
     cadastral_reference?: string | null;
   } | null;
   movable?: {
-    movable_kind?: "GENERAL" | "ART" | "JEWELRY" | "VEHICLE" | "BOAT" | "AIRCRAFT" | "COLLECTION" | "OTHER" | null;
+    movable_kind?:
+      | "GENERAL"
+      | "ART"
+      | "JEWELRY"
+      | "VEHICLE"
+      | "BOAT"
+      | "AIRCRAFT"
+      | "COLLECTION"
+      | "ADMINISTRATIVE_CONCESSION"
+      | "CONTRACT_OPTION"
+      | "INTELLECTUAL_PROPERTY"
+      | "REGISTERED_MOVABLE"
+      | "LOCATED_MOVABLE"
+      | "OTHER"
+      | null;
     registry_reference?: string | null;
     valuation_method?: string | null;
   } | null;
@@ -162,6 +176,28 @@ export interface CanonicalFiscalEvent {
     | "ADJUSTMENT";
   event_date: string;
   asset_id?: string | null;
+  capital_operation_key?:
+    | "DIVIDENDO_ACCION"
+    | "DIVIDENDO_FONDO"
+    | "INTERES_CUENTA"
+    | "INTERES_BONO"
+    | "CUPON_BONO"
+    | "REND_SEGURO_VIDA"
+    | "RENTA_VITALICIA"
+    | "COMPRA_VALOR"
+    | "VENTA_VALOR"
+    | "COMPRA_FONDO"
+    | "VENTA_FONDO"
+    | "ALQUILER_INMUEBLE"
+    | "COMPRA_INMUEBLE"
+    | "VENTA_INMUEBLE"
+    | "COMPRA_BIEN_MUEBLE"
+    | "VENTA_BIEN_MUEBLE"
+    | "RETENCION_MANUAL"
+    | "OTRO_MOVIMIENTO"
+    | null;
+  irpf_group?: "RCM" | "GYP" | "OTRO" | null;
+  irpf_subgroup?: string | null;
   quantity?: number | null;
   gross_amount_eur?: number | null;
   net_amount_eur?: number | null;
@@ -170,6 +206,14 @@ export interface CanonicalFiscalEvent {
   cost_basis_amount_eur?: number | null;
   realized_result_eur?: number | null;
   currency?: string | null;
+  expense_amount_eur?: number | null;
+  original_currency?: string | null;
+  gross_amount_original?: number | null;
+  fx_rate?: number | null;
+  unit_price_eur?: number | null;
+  is_closing_operation?: boolean | null;
+  is_stock_dividend?: boolean | null;
+  irpf_box_code?: string | null;
   notes?: string | null;
 }
 

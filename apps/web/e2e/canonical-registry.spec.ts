@@ -33,6 +33,34 @@ test.describe("canonical registry helpers", () => {
           },
           confidence: 0.93,
           source_spans: []
+        },
+        {
+          record_type: "COMPRA",
+          fields: {
+            operation_date: "2025-02-10",
+            asset_key: "I",
+            isin: "IE00B4L5Y983",
+            description: "Vanguard Global Stock",
+            amount: 2000,
+            quantity: 20,
+            currency: "EUR",
+            country_code: "IE",
+            location_key: "EX"
+          },
+          confidence: 0.91,
+          source_spans: []
+        },
+        {
+          record_type: "BIEN_MUEBLE",
+          fields: {
+            description: "Concesion administrativa portuaria",
+            movable_kind: "C",
+            valuation_1_eur: 45000,
+            country_code: "ES",
+            location_key: "ES"
+          },
+          confidence: 0.88,
+          source_spans: []
         }
       ]
     });
@@ -53,6 +81,21 @@ test.describe("canonical registry helpers", () => {
           security: expect.objectContaining({
             security_identifier: "US0378331005"
           })
+        }),
+        expect.objectContaining({
+          asset_class: "COLLECTIVE_INVESTMENT",
+          asset_key: "I",
+          country_code: "IE",
+          collective_investment: expect.objectContaining({
+            security_identifier: "IE00B4L5Y983"
+          })
+        }),
+        expect.objectContaining({
+          asset_class: "MOVABLE_ASSET",
+          asset_key: "M",
+          movable: expect.objectContaining({
+            movable_kind: "ADMINISTRATIVE_CONCESSION"
+          })
         })
       ])
     );
@@ -61,9 +104,20 @@ test.describe("canonical registry helpers", () => {
       expect.arrayContaining([
         expect.objectContaining({
           event_type: "DIVIDEND",
+          capital_operation_key: "DIVIDENDO_ACCION",
+          irpf_group: "RCM",
+          irpf_subgroup: "DIVIDENDOS",
           event_date: "2025-01-15",
           gross_amount_eur: 123.45,
           withholding_amount_eur: 18.52
+        }),
+        expect.objectContaining({
+          event_type: "ACQUISITION",
+          capital_operation_key: "COMPRA_FONDO",
+          irpf_group: "GYP",
+          irpf_subgroup: "FONDOS",
+          quantity: 20,
+          unit_price_eur: 100
         })
       ])
     );

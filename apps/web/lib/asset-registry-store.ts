@@ -107,6 +107,11 @@ type AssetMovableRow = {
     | "BOAT"
     | "AIRCRAFT"
     | "COLLECTION"
+    | "ADMINISTRATIVE_CONCESSION"
+    | "CONTRACT_OPTION"
+    | "INTELLECTUAL_PROPERTY"
+    | "REGISTERED_MOVABLE"
+    | "LOCATED_MOVABLE"
     | "OTHER";
   referencia_registro: string | null;
   metodo_valoracion: string | null;
@@ -119,6 +124,9 @@ type FiscalEventRow = {
   document_id: string | null;
   event_type: CanonicalFiscalEvent["event_type"];
   event_date: string;
+  capital_operation_key: string | null;
+  irpf_group: string | null;
+  irpf_subgroup: string | null;
   quantity: number | string | null;
   gross_amount_eur: number | string | null;
   net_amount_eur: number | string | null;
@@ -127,6 +135,14 @@ type FiscalEventRow = {
   cost_basis_amount_eur: number | string | null;
   realized_result_eur: number | string | null;
   currency: string | null;
+  expense_amount_eur: number | string | null;
+  original_currency: string | null;
+  gross_amount_original: number | string | null;
+  fx_rate: number | string | null;
+  unit_price_eur: number | string | null;
+  is_closing_operation: boolean | null;
+  is_stock_dividend: boolean | null;
+  irpf_box_code: string | null;
   source: CanonicalFiscalEvent["source"];
   origin_trace: JsonObject | null;
   notes: string | null;
@@ -179,7 +195,7 @@ export async function loadCanonicalRegistrySnapshot(
     supabase
       .from(dbTables.assetFiscalEvents)
       .select(
-        "id, expediente_id, asset_id, document_id, event_type, event_date, quantity, gross_amount_eur, net_amount_eur, withholding_amount_eur, proceeds_amount_eur, cost_basis_amount_eur, realized_result_eur, currency, source, origin_trace, notes"
+        "id, expediente_id, asset_id, document_id, event_type, event_date, capital_operation_key, irpf_group, irpf_subgroup, quantity, gross_amount_eur, net_amount_eur, withholding_amount_eur, proceeds_amount_eur, cost_basis_amount_eur, realized_result_eur, currency, expense_amount_eur, original_currency, gross_amount_original, fx_rate, unit_price_eur, is_closing_operation, is_stock_dividend, irpf_box_code, source, origin_trace, notes"
       )
       .eq("expediente_id", expedienteId)
       .order("event_date", { ascending: false })
@@ -418,6 +434,9 @@ export async function loadCanonicalRegistrySnapshot(
           : null,
       event_type: row.event_type,
       event_date: row.event_date,
+      capital_operation_key: row.capital_operation_key as CanonicalFiscalEvent["capital_operation_key"],
+      irpf_group: row.irpf_group as CanonicalFiscalEvent["irpf_group"],
+      irpf_subgroup: row.irpf_subgroup,
       quantity: toNullableNumber(row.quantity),
       gross_amount_eur: toNullableNumber(row.gross_amount_eur),
       net_amount_eur: toNullableNumber(row.net_amount_eur),
@@ -426,6 +445,14 @@ export async function loadCanonicalRegistrySnapshot(
       cost_basis_amount_eur: toNullableNumber(row.cost_basis_amount_eur),
       realized_result_eur: toNullableNumber(row.realized_result_eur),
       currency: row.currency,
+      expense_amount_eur: toNullableNumber(row.expense_amount_eur),
+      original_currency: row.original_currency,
+      gross_amount_original: toNullableNumber(row.gross_amount_original),
+      fx_rate: toNullableNumber(row.fx_rate),
+      unit_price_eur: toNullableNumber(row.unit_price_eur),
+      is_closing_operation: row.is_closing_operation,
+      is_stock_dividend: row.is_stock_dividend,
+      irpf_box_code: row.irpf_box_code,
       source: row.source,
       origin_trace: row.origin_trace ?? {},
       notes: row.notes

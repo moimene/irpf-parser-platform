@@ -30,7 +30,34 @@ export type MovableAssetKind =
   | "BOAT"
   | "AIRCRAFT"
   | "COLLECTION"
+  | "ADMINISTRATIVE_CONCESSION"
+  | "CONTRACT_OPTION"
+  | "INTELLECTUAL_PROPERTY"
+  | "REGISTERED_MOVABLE"
+  | "LOCATED_MOVABLE"
   | "OTHER";
+
+export type CapitalOperationGroup = "RCM" | "GYP" | "OTRO";
+
+export type CapitalOperationKey =
+  | "DIVIDENDO_ACCION"
+  | "DIVIDENDO_FONDO"
+  | "INTERES_CUENTA"
+  | "INTERES_BONO"
+  | "CUPON_BONO"
+  | "REND_SEGURO_VIDA"
+  | "RENTA_VITALICIA"
+  | "COMPRA_VALOR"
+  | "VENTA_VALOR"
+  | "COMPRA_FONDO"
+  | "VENTA_FONDO"
+  | "ALQUILER_INMUEBLE"
+  | "COMPRA_INMUEBLE"
+  | "VENTA_INMUEBLE"
+  | "COMPRA_BIEN_MUEBLE"
+  | "VENTA_BIEN_MUEBLE"
+  | "RETENCION_MANUAL"
+  | "OTRO_MOVIMIENTO";
 
 export type CanonicalFiscalEventType =
   | "ACQUISITION"
@@ -146,6 +173,9 @@ export interface CanonicalFiscalEvent {
   document_id?: string | null;
   event_type: CanonicalFiscalEventType;
   event_date: string;
+  capital_operation_key?: CapitalOperationKey | null;
+  irpf_group?: CapitalOperationGroup | null;
+  irpf_subgroup?: string | null;
   quantity?: number | null;
   gross_amount_eur?: number | null;
   net_amount_eur?: number | null;
@@ -154,6 +184,14 @@ export interface CanonicalFiscalEvent {
   cost_basis_amount_eur?: number | null;
   realized_result_eur?: number | null;
   currency?: string | null;
+  expense_amount_eur?: number | null;
+  original_currency?: string | null;
+  gross_amount_original?: number | null;
+  fx_rate?: number | null;
+  unit_price_eur?: number | null;
+  is_closing_operation?: boolean | null;
+  is_stock_dividend?: boolean | null;
+  irpf_box_code?: string | null;
   source?: "AUTO" | "MANUAL" | "IMPORTACION_EXCEL" | "RUNTIME";
   origin_trace?: Record<string, unknown>;
   notes?: string | null;
@@ -345,6 +383,9 @@ export function serializeCanonicalFiscalEvent(
     expediente_id: event.expediente_id,
     event_type: event.event_type,
     event_date: event.event_date,
+    capital_operation_key: normalizeNullableText(event.capital_operation_key) as CapitalOperationKey | null,
+    irpf_group: normalizeNullableText(event.irpf_group) as CapitalOperationGroup | null,
+    irpf_subgroup: normalizeNullableText(event.irpf_subgroup),
     quantity: toNullableNumber(event.quantity),
     gross_amount_eur: toNullableNumber(event.gross_amount_eur),
     net_amount_eur: toNullableNumber(event.net_amount_eur),
@@ -353,6 +394,14 @@ export function serializeCanonicalFiscalEvent(
     cost_basis_amount_eur: toNullableNumber(event.cost_basis_amount_eur),
     realized_result_eur: toNullableNumber(event.realized_result_eur),
     currency: normalizeUppercaseText(event.currency),
+    expense_amount_eur: toNullableNumber(event.expense_amount_eur),
+    original_currency: normalizeUppercaseText(event.original_currency),
+    gross_amount_original: toNullableNumber(event.gross_amount_original),
+    fx_rate: toNullableNumber(event.fx_rate),
+    unit_price_eur: toNullableNumber(event.unit_price_eur),
+    is_closing_operation: event.is_closing_operation ?? false,
+    is_stock_dividend: event.is_stock_dividend ?? false,
+    irpf_box_code: normalizeNullableText(event.irpf_box_code),
     source: event.source ?? "AUTO",
     origin_trace: event.origin_trace ?? {},
     notes: normalizeNullableText(event.notes)
