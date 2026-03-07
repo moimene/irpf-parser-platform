@@ -11,6 +11,13 @@
  *   - Orden HAP/2055/2012 (Modelo 714)
  */
 
+import {
+  getAssetDisplayName,
+  isForeignAssetRecord,
+  supportsModel720,
+  type CanonicalAssetRecord
+} from "@/lib/asset-registry";
+
 export interface AeatRecord {
   isin?: string | null;
   description?: string | null;
@@ -22,6 +29,8 @@ export interface AeatRecord {
   realized_gain?: number | null;
   operation_type?: string;
 }
+
+export type AeatAssetRecord = CanonicalAssetRecord;
 
 // ---------------------------------------------------------------------------
 // Utilidades de formato
@@ -59,6 +68,34 @@ function formatNif(nif: string): string {
 
 function currentYear(): string {
   return new Date().getFullYear().toString();
+}
+
+function formatPercentage(value: number | null | undefined): string {
+  if (value == null) {
+    return "00000";
+  }
+
+  const normalized = Math.max(0, Math.min(100, value));
+  return padLeft(Math.round(normalized * 100), 5, "0");
+}
+
+function truncate(value: string | null | undefined, length: number): string {
+  return padRight((value ?? "").slice(0, length), length);
+}
+
+function deriveAssetIdentifier(asset: AeatAssetRecord): string {
+  return (
+    asset.security?.security_identifier ??
+    asset.collective_investment?.security_identifier ??
+    asset.account?.account_code ??
+    asset.real_estate?.cadastral_reference ??
+    asset.movable?.registry_reference ??
+    ""
+  );
+}
+
+function deriveAssetQuantity(asset: AeatAssetRecord): number | null {
+  return asset.security?.units ?? asset.collective_investment?.units ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +223,57 @@ export function generateModel714(
   return lines.join("\r\n") + "\r\n";
 }
 
+export function generateModel714FromAssets(
+  assets: AeatAssetRecord[],
+  nif: string,
+  ejercicio: string = currentYear()
+): string {
+  const lines: string[] = [];
+
+  const header = [
+    "1",
+    "714",
+    ejercicio,
+    formatNif(nif),
+    padRight("IP ASSET REGISTRY", 40),
+    padLeft("", 443)
+  ].join("");
+  lines.push(header.slice(0, 500));
+
+  const positions = assets.filter((asset) => asset.location_key === "ES" || isForeignAssetRecord(asset));
+
+  positions.forEach((asset, idx) => {
+    const line = [
+      "2",
+      "714",
+      ejercicio,
+      formatNif(nif),
+      padLeft(idx + 1, 6, "0"),
+      truncate(deriveAssetIdentifier(asset), 12),
+      truncate(getAssetDisplayName(asset), 40),
+      formatAmount(deriveAssetQuantity(asset)),
+      formatAmount(asset.valuation_1_eur),
+      padRight(asset.currency ?? "EUR", 3),
+      padLeft("", 382)
+    ].join("");
+    lines.push(line.slice(0, 500));
+  });
+
+  const totalPatrimonio = positions.reduce((sum, asset) => sum + asset.valuation_1_eur, 0);
+  const footer = [
+    "9",
+    "714",
+    ejercicio,
+    formatNif(nif),
+    padLeft(positions.length, 9, "0"),
+    formatAmount(totalPatrimonio, 15),
+    padLeft("", 462)
+  ].join("");
+  lines.push(footer.slice(0, 500));
+
+  return lines.join("\r\n") + "\r\n";
+}
+
 // ---------------------------------------------------------------------------
 // Modelo 720 — Bienes en el extranjero
 // Registro tipo 2 — Cuentas y valores en entidades financieras extranjeras
@@ -253,6 +341,61 @@ export function generateModel720(
   return lines.join("\r\n") + "\r\n";
 }
 
+export function generateModel720FromAssets(
+  assets: AeatAssetRecord[],
+  nif: string,
+  ejercicio: string = currentYear()
+): string {
+  const lines: string[] = [];
+
+  const header = [
+    "1",
+    "720",
+    ejercicio,
+    formatNif(nif),
+    padRight("720 ASSET REGISTRY", 40),
+    padLeft("", 443)
+  ].join("");
+  lines.push(header.slice(0, 500));
+
+  const foreignAssets = assets.filter((asset) => supportsModel720(asset) && isForeignAssetRecord(asset));
+
+  foreignAssets.forEach((asset, idx) => {
+    const line = [
+      "2",
+      "720",
+      ejercicio,
+      formatNif(nif),
+      padLeft(idx + 1, 6, "0"),
+      asset.asset_key,
+      asset.asset_subkey,
+      padRight(asset.country_code, 2),
+      truncate(deriveAssetIdentifier(asset), 34),
+      truncate(getAssetDisplayName(asset), 60),
+      formatDate(asset.incorporation_date),
+      formatAmount(asset.valuation_1_eur, 15),
+      formatAmount(asset.valuation_2_eur, 15),
+      formatPercentage(asset.ownership_percentage),
+      padLeft("", 345)
+    ].join("");
+    lines.push(line.slice(0, 500));
+  });
+
+  const totalSaldo = foreignAssets.reduce((sum, asset) => sum + asset.valuation_1_eur, 0);
+  const footer = [
+    "9",
+    "720",
+    ejercicio,
+    formatNif(nif),
+    padLeft(foreignAssets.length, 9, "0"),
+    formatAmount(totalSaldo, 15),
+    padLeft("", 462)
+  ].join("");
+  lines.push(footer.slice(0, 500));
+
+  return lines.join("\r\n") + "\r\n";
+}
+
 // ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
@@ -270,5 +413,19 @@ export function generateAeatFile(
       return generateModel714(records, nif, ejercicio);
     case "720":
       return generateModel720(records, nif, ejercicio);
+  }
+}
+
+export function generateAeatAssetFile(
+  model: "714" | "720",
+  assets: AeatAssetRecord[],
+  nif: string,
+  ejercicio?: string
+): string {
+  switch (model) {
+    case "714":
+      return generateModel714FromAssets(assets, nif, ejercicio);
+    case "720":
+      return generateModel720FromAssets(assets, nif, ejercicio);
   }
 }

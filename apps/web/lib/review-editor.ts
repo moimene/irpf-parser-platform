@@ -4,22 +4,48 @@ type JsonObject = Record<string, unknown>;
 type ParsedFieldValue = ParsedRecord["fields"][string];
 
 const recordTypes: ParsedRecord["record_type"][] = [
+  "CUENTA",
+  "VALOR",
+  "IIC",
+  "SEGURO",
+  "INMUEBLE",
+  "BIEN_MUEBLE",
   "DIVIDENDO",
   "INTERES",
+  "RENTA",
+  "RETENCION",
   "COMPRA",
   "VENTA",
   "POSICION",
+  "CUENTA_BANCARIA",
+  "MOVIMIENTO",
   "DESCONOCIDO"
 ];
 
 const fieldPriority = [
   "operation_date",
+  "event_date",
   "description",
+  "entity_name",
   "isin",
+  "security_identifier",
+  "account_code",
+  "country_code",
+  "location_key",
+  "tax_territory_code",
+  "condition_key",
+  "asset_key",
+  "asset_subkey",
+  "incorporation_date",
+  "origin_key",
+  "extinction_date",
   "quantity",
   "amount",
+  "valuation_1_eur",
+  "valuation_2_eur",
   "currency",
   "retention",
+  "ownership_percentage",
   "realized_gain"
 ];
 
@@ -244,13 +270,22 @@ export function inferReviewFieldKind(
   }
 
   if (
-    ["amount", "quantity", "retention", "realized_gain", "confidence"].includes(key) ||
+    [
+      "amount",
+      "quantity",
+      "retention",
+      "realized_gain",
+      "confidence",
+      "valuation_1_eur",
+      "valuation_2_eur",
+      "ownership_percentage"
+    ].includes(key) ||
     typeof value === "number"
   ) {
     return "number";
   }
 
-  if (key === "operation_date") {
+  if (["operation_date", "event_date", "incorporation_date", "extinction_date"].includes(key)) {
     return "date";
   }
 

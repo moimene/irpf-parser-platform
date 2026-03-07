@@ -32,6 +32,15 @@ interface OperationRow {
   created_at?: string;
 }
 
+interface AssetValidationRow {
+  id: string;
+  clave_tipo_bien: string;
+  clave_situacion: "ES" | "EX";
+  codigo_pais: string;
+  valoracion_1_eur: number | string | null;
+  porcentaje_participacion: number | string | null;
+}
+
 function toModelExtension(model: ExportModel): string {
   return model;
 }
@@ -79,6 +88,30 @@ async function loadModel100Runtime(
     blockedLosses: runtime.blockedLosses,
     issues: runtime.issues
   };
+}
+
+function isMissingRelation(errorMessage: string | undefined): boolean {
+  return Boolean(errorMessage && /does not exist|relation .* does not exist/i.test(errorMessage));
+}
+
+async function loadCanonicalAssetValidationRows(
+  supabase: SupabaseClient,
+  expedienteId: string
+): Promise<AssetValidationRow[] | null> {
+  const result = await supabase
+    .from(dbTables.assetRegistry)
+    .select("id, clave_tipo_bien, clave_situacion, codigo_pais, valoracion_1_eur, porcentaje_participacion")
+    .eq("expediente_id", expedienteId);
+
+  if (result.error) {
+    if (isMissingRelation(result.error.message)) {
+      return null;
+    }
+
+    throw new Error(`No se pudo cargar el registro canonico de activos: ${result.error.message}`);
+  }
+
+  return (result.data ?? []) as AssetValidationRow[];
 }
 
 export async function GET(request: Request, context: { params: { expediente_id: string } }) {
@@ -131,8 +164,10 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       model
     )}`;
 
-    const model100Runtime =
-      model === "100" ? await loadModel100Runtime(supabase, resolvedExpediente.id) : null;
+    const [model100Runtime, canonicalAssetRows] = await Promise.all([
+      model === "100" ? loadModel100Runtime(supabase, resolvedExpediente.id) : Promise.resolve(null),
+      model === "100" ? Promise.resolve(null) : loadCanonicalAssetValidationRows(supabase, resolvedExpediente.id)
+    ]);
 
     const baseValidation =
       model === "100"
@@ -147,8 +182,41 @@ export async function GET(request: Request, context: { params: { expediente_id: 
             blockedLossesCount: model100Runtime?.blockedLosses.length ?? 0
           })
         : model === "714"
-          ? validateModel714()
-          : validateModel720();
+          ? validateModel714(
+              canonicalAssetRows
+                ? {
+                    totalAssets: canonicalAssetRows.length,
+                    invalidAssetCount: canonicalAssetRows.filter(
+                      (asset) =>
+                        !asset.clave_tipo_bien ||
+                        (asset.clave_situacion === "ES" && asset.codigo_pais !== "ES")
+                    ).length,
+                    missingValuationCount: canonicalAssetRows.filter(
+                      (asset) => asset.valoracion_1_eur === null || Number(asset.valoracion_1_eur) <= 0
+                    ).length,
+                    missingClassificationCount: canonicalAssetRows.filter((asset) => !asset.clave_tipo_bien).length
+                  }
+                : undefined
+            )
+          : validateModel720(
+              canonicalAssetRows
+                ? {
+                    totalAssets: canonicalAssetRows.length,
+                    foreignAssets: canonicalAssetRows.filter(
+                      (asset) => asset.clave_situacion === "EX" && asset.codigo_pais !== "ES"
+                    ).length,
+                    invalidForeignAssetCount: canonicalAssetRows.filter(
+                      (asset) => asset.clave_situacion === "EX" && (!asset.clave_tipo_bien || asset.codigo_pais === "ES")
+                    ).length,
+                    missingCountryCount: canonicalAssetRows.filter((asset) => !asset.codigo_pais).length,
+                    missingOwnershipCount: canonicalAssetRows.filter(
+                      (asset) =>
+                        asset.porcentaje_participacion === null ||
+                        Number(asset.porcentaje_participacion) <= 0
+                    ).length
+                  }
+                : undefined
+            );
 
     const adjustmentIssues =
       model === "100"
@@ -171,7 +239,8 @@ export async function GET(request: Request, context: { params: { expediente_id: 
         model,
         generatedAt,
         validation,
-        sales: model100Runtime?.saleSummaries.length ?? 0
+        sales: model100Runtime?.saleSummaries.length ?? 0,
+        assets: canonicalAssetRows?.length ?? 0
       })
     );
 
@@ -187,6 +256,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       messages: validation.messages,
       blocked_losses: model100Runtime?.blockedLosses ?? [],
       runtime_issues: adjustmentIssues,
+      assets_count: canonicalAssetRows?.length ?? 0,
       current_user: {
         reference: sessionUser.reference,
         display_name: sessionUser.display_name,
@@ -209,6 +279,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       payload: {
         messages: validation.messages,
         sales_count: model100Runtime?.saleSummaries.length ?? 0,
+        assets_count: canonicalAssetRows?.length ?? 0,
         blocked_losses: model100Runtime?.blockedLosses ?? [],
         runtime_issues: adjustmentIssues,
         expediente_reference: resolvedExpediente.reference

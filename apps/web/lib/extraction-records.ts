@@ -4,11 +4,21 @@ type JsonObject = Record<string, unknown>;
 type ParsedFieldValue = string | number | boolean | null;
 
 const parsedRecordTypes = new Set<ParsedRecord["record_type"]>([
+  "CUENTA",
+  "VALOR",
+  "IIC",
+  "SEGURO",
+  "INMUEBLE",
+  "BIEN_MUEBLE",
   "DIVIDENDO",
   "INTERES",
+  "RENTA",
+  "RETENCION",
   "COMPRA",
   "VENTA",
   "POSICION",
+  "CUENTA_BANCARIA",
+  "MOVIMIENTO",
   "DESCONOCIDO"
 ]);
 

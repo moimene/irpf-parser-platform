@@ -50,15 +50,72 @@ export interface SourceSpan {
 
 export interface ParsedRecord {
   record_type:
+    | "CUENTA"
+    | "VALOR"
+    | "IIC"
+    | "SEGURO"
+    | "INMUEBLE"
+    | "BIEN_MUEBLE"
     | "DIVIDENDO"
     | "INTERES"
+    | "RENTA"
+    | "RETENCION"
     | "COMPRA"
     | "VENTA"
     | "POSICION"
+    | "CUENTA_BANCARIA"
+    | "MOVIMIENTO"
     | "DESCONOCIDO";
   fields: Record<string, string | number | boolean | null>;
   confidence: number;
   source_spans: SourceSpan[];
+}
+
+export interface CanonicalAssetRecord {
+  asset_class:
+    | "ACCOUNT"
+    | "SECURITY"
+    | "COLLECTIVE_INVESTMENT"
+    | "INSURANCE"
+    | "REAL_ESTATE"
+    | "MOVABLE_ASSET";
+  condition_key: "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8";
+  asset_key: "C" | "V" | "I" | "S" | "B" | "M";
+  asset_subkey: string;
+  country_code: string;
+  location_key: "ES" | "EX";
+  incorporation_date: string;
+  origin_key: "A" | "M" | "C";
+  valuation_1_eur: number;
+  valuation_2_eur?: number | null;
+  ownership_percentage: number;
+  entity_name?: string | null;
+  asset_description?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CanonicalFiscalEvent {
+  event_type:
+    | "ACQUISITION"
+    | "DISPOSAL"
+    | "INTEREST"
+    | "DIVIDEND"
+    | "RENT"
+    | "WITHHOLDING"
+    | "GAIN"
+    | "LOSS"
+    | "ADJUSTMENT";
+  event_date: string;
+  asset_id?: string | null;
+  quantity?: number | null;
+  gross_amount_eur?: number | null;
+  net_amount_eur?: number | null;
+  withholding_amount_eur?: number | null;
+  proceeds_amount_eur?: number | null;
+  cost_basis_amount_eur?: number | null;
+  realized_result_eur?: number | null;
+  currency?: string | null;
+  notes?: string | null;
 }
 
 export interface StructuredTable {
@@ -101,6 +158,8 @@ export interface ParseDocumentResponse {
   confidence: number;
   requires_manual_review: boolean;
   records: ParsedRecord[];
+  asset_records?: CanonicalAssetRecord[];
+  fiscal_events?: CanonicalFiscalEvent[];
   source_spans: SourceSpan[];
   structured_document?: StructuredDocument | null;
   warnings: string[];

@@ -94,8 +94,8 @@ La suite E2E cubre:
 | Dashboard operativo | Implementado | `apps/web/app/api/dashboard/route.ts` | Metricas base de operacion. |
 | Motor fiscal IRPF | Parcial avanzada | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts`, `apps/web/lib/fiscal-adjustments.ts` | Runtime fiscal con lotes, asignaciones FIFO, pérdidas bloqueadas y ajustes manuales persistidos; falta cierre de dominio completo y modulos fiscales posteriores. |
 | Lotes de adquisicion | Implementado | `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `apps/web/lib/lots.ts` | Runtime derivado por expediente con FIFO, transferencias de salida y adquisiciones manuales; queda pendiente el cierre fiscal completo y patrimonio. |
-| Patrimonio / IP | Parcial muy inicial | `apps/web/lib/aeat/format.ts` | Export base, no modulo fiscal completo. |
-| Modelo 720 | Parcial muy inicial | `apps/web/lib/aeat/format.ts` | Export simplificado, no solucion completa. |
+| Patrimonio / IP | Base canonica introducida | `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`, `apps/web/lib/asset-registry.ts`, `apps/web/lib/aeat/format.ts` | Existe ya registro canonico de bienes/derechos y eventos fiscales; sigue faltando que parser y UI operen nativamente sobre el modulo. |
+| Modelo 720 | Base canonica introducida | `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`, `apps/web/lib/aeat/format.ts` | El export deja de depender conceptualmente de `irpf_operations`, pero aun mantiene fallback hasta migrar la captura. |
 | Clientes y ficha cliente | Implementado | `apps/web/app/clientes/page.tsx`, `apps/web/app/clientes/[id]/page.tsx` | Alta, ficha, expedientes y equipo asignado. |
 | Configuracion / acceso | Implementado en slice inicial | `apps/web/app/configuracion/page.tsx` | Admin de usuarios y asignaciones, no modulo completo de gobierno. |
 | Auth real de despacho | Implementado en slice inicial | `apps/web/lib/auth.ts`, `apps/web/middleware.ts` | Supabase Auth + perfiles persistentes + permisos por rol. |
@@ -132,7 +132,7 @@ Esto permite operar en produccion hoy, pero no debe considerarse arquitectura ob
 1. La compatibilidad de acceso soporta schema legacy y moderno, pero la persistencia de asignacion de rol por cliente sigue limitada por el schema legacy.
 2. La asociacion cliente-expediente es obligatoria para intake. Si el expediente no la tiene, la UI ahora exige seleccion explicita del cliente.
 3. La plataforma usa auth real, pero todavia no persiste una relacion fuerte `auth.users.id -> perfil de despacho` en schema runtime moderno.
-4. `714` y `720` existen como exportadores base, no como solucion fiscal cerrada.
+4. `714` y `720` ya tienen base de dominio canonica, pero no son todavia una solucion fiscal cerrada ni una captura operativa completa.
 5. El parser no debe venderse como OCR generalista ni como cobertura abierta de entidades.
 6. `Configuracion` es ya un modulo vivo, pero no cubre todavia plantillas, catalogos, reglas ni gobierno funcional completo.
 7. `Docling` encaja como capa futura de `document-understanding`, no como modelo fiscal ni como reemplazo de reglas/exports deterministas.
@@ -192,7 +192,8 @@ Siguiente foco del track:
 
 ### Track 3. Patrimonio e IP
 
-- Cuentas, posiciones y valoracion a cierre.
+- Registro canonico de bienes/derechos ya introducido.
+- Falta volcar parser y UI sobre cuentas, valores cotizados/no cotizados, IIC, seguros, inmuebles y bienes muebles.
 - Tipos de cambio.
 - Saldos medios del ultimo trimestre.
 - Modulo especifico de patrimonio.
@@ -200,10 +201,24 @@ Siguiente foco del track:
 
 ### Track 4. Modelo 720
 
-- Identificacion por bloque de bien.
+- Identificacion por bloque de bien ya aterrizada en el schema canonico.
+- Falta capturar y validar todas las claves/subclaves desde parser/review.
 - Umbrales de declaracion.
 - Pais, titularidad y comparativa interanual.
 - Vista previa funcional antes de exportar.
+
+## Actualizacion 2026-03-07 modelo canonico de bienes y derechos
+
+- Se introduce `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql` con:
+  - catalogos maestros de pais, situacion, territorio fiscal, condicion declarante, tipo/subclave de bien, origen y representacion,
+  - `irpf_declaration_profiles` como cabecera fiscal por expediente,
+  - `irpf_asset_registry` como registro canonico comun,
+  - tablas especificas para cuentas, valores, IIC, seguros, inmuebles y bienes muebles,
+  - e `irpf_asset_fiscal_events` para intereses, dividendos, rentas, transmisiones, ganancias/perdidas y retenciones.
+- `apps/web/lib/asset-registry.ts` define ya el contrato canonico de activos y eventos fiscales.
+- `apps/web/lib/contracts.ts`, `packages/contracts/src/index.ts` y `services/parser/app/schemas.py` abren el contrato de parseo para `asset_records` y `fiscal_events`.
+- `apps/web/app/api/exports/[expediente_id]/route.ts` y `/download` ya quedan preparados para leer `714` y `720` desde `irpf_asset_registry` cuando exista informacion canonica, manteniendo fallback temporal a `irpf_operations`.
+- `apps/web/lib/aeat/format.ts` añade generadores `generateModel714FromAssets` y `generateModel720FromAssets` para que el export AEAT deje de ser solo una serializacion de operaciones.
 
 ### Track 5. Administracion y trazabilidad
 

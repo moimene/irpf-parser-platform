@@ -51,6 +51,7 @@ Fase 2 queda abierta con la primera slice vertical ya operativa.
 
 ## Fase 3 Patrimonio e IP
 
+- Base canonica de bienes/derechos y eventos fiscales introducida
 - Cuentas financieras y posiciones a cierre
 - Tipos de cambio y saldo medio trimestral
 - Modulo de patrimonio
@@ -58,7 +59,7 @@ Fase 2 queda abierta con la primera slice vertical ya operativa.
 
 ## Fase 4 Modelo 720
 
-- Bienes por bloque y pais
+- Bienes por bloque y pais sobre `irpf_asset_registry`
 - Umbrales de declaracion
 - Titularidad y comparativa interanual
 - Previsualizacion funcional previa a exportacion

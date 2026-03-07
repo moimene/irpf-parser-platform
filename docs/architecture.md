@@ -30,10 +30,24 @@
   - `Docling` como candidato para `PDF/DOCX/IMAGE` en la capa documental por OCR, tablas y representación estructurada.
   - El LLM debe quedar restringido a clasificación semántica y mapping de columnas/campos dentro de un schema cerrado.
 
-## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`)
+## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`, `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`)
 
-- Tablas runtime: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_fiscal_adjustments`, `irpf_lots`, `irpf_sale_allocations`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
+- Tablas runtime operativas: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_fiscal_adjustments`, `irpf_lots`, `irpf_sale_allocations`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
+- Registro canonico de dominio introducido para `714`/`720`/`IP`: `irpf_declaration_profiles`, `irpf_asset_registry`, `irpf_asset_accounts`, `irpf_asset_securities`, `irpf_asset_collective_investments`, `irpf_asset_insurances`, `irpf_asset_real_estate`, `irpf_asset_movable_goods`, `irpf_asset_fiscal_events`
+- Catalogos maestros nuevos: pais, situacion del bien, territorio fiscal, condicion del declarante, tipo/subclave de bien, origen, identificacion/representacion, tipo de inmueble y tipo de bien mueble
 - El esquema rico inicial de `0001_init.sql` existe como antecedente de diseño, pero no es la base operativa actual
+
+## Decision de dominio
+
+- `irpf_operations` sigue siendo el runtime vigente para IRPF transaccional y el cierre FIFO ya desplegado.
+- `irpf_operations` no es ya la abstraccion objetivo para `714`, `720`, `IP` ni patrimonio general.
+- El modelo canonico correcto pasa a ser:
+  - perfil de declaracion,
+  - registro de bienes y derechos,
+  - tablas especificas por tipologia,
+  - y eventos fiscales de rendimientos/transmisiones/retenciones.
+- Las `entity templates` dejan de ser modelo de negocio; son solo adapters de extraccion.
+- `714` y `720` deben leer del registro canonico y solo mantener fallback temporal a `irpf_operations` mientras se migra la captura.
 
 ## Capa n8n (`infra/n8n/workflows/irpf-parser-orchestration.json`)
 
@@ -53,6 +67,11 @@ La arquitectura actual consolida el flujo critico de expediente y documentos, pe
 - trazabilidad por celda/caja estable sobre el documento fuente,
 - patrimonio y no cotizadas,
 - configuracion de plantillas y reglas como modulo de negocio.
+
+Nuevo matiz vigente:
+
+- patrimonio, no cotizadas, seguros, inmuebles y bienes muebles ya tienen base de persistencia canonica,
+- pero el parser y la UI todavia no vuelcan de forma nativa sobre ese registro en produccion.
 
 La capa de revision manual ya no es solo una cola:
 

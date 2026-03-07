@@ -13,7 +13,24 @@ class SourceSpan(BaseModel):
 
 
 class ParsedRecord(BaseModel):
-    record_type: Literal["DIVIDENDO", "INTERES", "COMPRA", "VENTA", "POSICION", "CUENTA_BANCARIA", "MOVIMIENTO", "DESCONOCIDO"]
+    record_type: Literal[
+        "CUENTA",
+        "VALOR",
+        "IIC",
+        "SEGURO",
+        "INMUEBLE",
+        "BIEN_MUEBLE",
+        "DIVIDENDO",
+        "INTERES",
+        "RENTA",
+        "RETENCION",
+        "COMPRA",
+        "VENTA",
+        "POSICION",
+        "CUENTA_BANCARIA",
+        "MOVIMIENTO",
+        "DESCONOCIDO",
+    ]
     fields: Dict[str, Any]
     confidence: float = Field(ge=0.0, le=1.0)
     source_spans: List[SourceSpan]
@@ -59,6 +76,8 @@ class ParseDocumentResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     requires_manual_review: bool
     records: List[ParsedRecord]
+    asset_records: List[Dict[str, Any]] = Field(default_factory=list)
+    fiscal_events: List[Dict[str, Any]] = Field(default_factory=list)
     source_spans: List[SourceSpan]
     structured_document: Optional[StructuredDocument] = None
     warnings: List[str]
