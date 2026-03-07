@@ -23,6 +23,11 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  const [loading, setLoading] = useState(false);
  const [result, setResult] = useState<ExportResult | null>(null);
  const [error, setError] = useState<string | null>(null);
+ const canDownload =
+ result !== null &&
+ result.model === model &&
+ result.validation_state !== "errors" &&
+ !loading;
 
  async function handleGenerate() {
  setLoading(true);
@@ -105,13 +110,15 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  <button
  type="button"
  onClick={handleDownload}
+ disabled={!canDownload}
  style={{
  background: "var(--color-primary, #1a365d)",
  color: "white",
  border: "none",
  borderRadius: "4px",
  padding: "8px 16px",
- cursor: "pointer",
+ cursor: canDownload ? "pointer" : "not-allowed",
+ opacity: canDownload ? 1 : 0.6,
  fontWeight: 600,
  }}
  >
@@ -150,6 +157,11 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  ))}
  </ul>
  )}
+ {result?.validation_state === "errors" ? (
+ <p className="muted" style={{ marginTop: "8px" }}>
+ Corrige los errores de validación antes de descargar el fichero AEAT.
+ </p>
+ ) : null}
  <details style={{ marginTop: "12px" }}>
  <summary className="muted">Ver metadatos técnicos</summary>
  <pre style={{ fontSize: "0.75rem", overflowX: "auto" }}>

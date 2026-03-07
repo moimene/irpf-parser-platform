@@ -1,11 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { TradeEvent } from "@/lib/rules-core";
 import { dbTables } from "@/lib/db-tables";
 
 type JsonObject = Record<string, unknown>;
 
-type OperationSource = "AUTO" | "MANUAL" | "IMPORTACION_EXCEL";
+export type OperationSource = "AUTO" | "MANUAL" | "IMPORTACION_EXCEL";
 
-type OperationRow = {
+export type RuntimeOperationRow = {
   id: string;
   expediente_id: string;
   operation_type: string;
@@ -39,7 +40,63 @@ export type PersistedLot = {
   metadata: JsonObject;
 };
 
-export type LotDerivationIssue = {
+export type PersistedSaleAllocation = {
+  id: string;
+  expediente_id: string;
+  sale_operation_id: string;
+  lot_id: string;
+  acquisition_operation_id: string;
+  isin: string;
+  sale_date: string;
+  acquisition_date: string;
+  quantity: number;
+  sale_unit_price: number | null;
+  sale_amount_allocated: number | null;
+  unit_cost: number | null;
+  total_cost: number | null;
+  realized_gain: number | null;
+  currency: string | null;
+  source: OperationSource;
+  metadata: JsonObject;
+};
+
+export type PersistedSaleAllocationRow = {
+  sale_operation_id: string;
+  quantity: number | string;
+  sale_amount_allocated: number | string | null;
+  total_cost: number | string | null;
+  realized_gain: number | string | null;
+  acquisition_date: string;
+  acquisition_operation_id?: string | null;
+  currency?: string | null;
+};
+
+export type FiscalSaleStatus =
+  | "MATCHED"
+  | "UNRESOLVED"
+  | "PENDING_COST_BASIS"
+  | "INVALID_DATA";
+
+export type FiscalSaleSummary = {
+  sale_operation_id: string;
+  operation_date: string;
+  isin: string | null;
+  description: string | null;
+  quantity: number | null;
+  sale_amount: number | null;
+  sale_amount_allocated: number | null;
+  quantity_allocated: number;
+  missing_quantity: number;
+  cost_basis: number | null;
+  realized_gain: number | null;
+  reported_realized_gain: number | null;
+  currency: string | null;
+  allocations_count: number;
+  status: FiscalSaleStatus;
+  source: OperationSource;
+};
+
+export type FiscalRuntimeIssue = {
   code: string;
   operation_id: string;
   message: string;
@@ -47,13 +104,22 @@ export type LotDerivationIssue = {
   quantity?: number | null;
 };
 
+export type DerivedFiscalRuntime = {
+  lots: PersistedLot[];
+  allocations: PersistedSaleAllocation[];
+  saleSummaries: FiscalSaleSummary[];
+  issues: FiscalRuntimeIssue[];
+};
+
 type MutableLot = PersistedLot & {
   metadata: {
     sales: Array<{
-      operation_id: string;
+      allocation_id: string;
+      sale_operation_id: string;
       operation_date: string;
       quantity: number;
-      proceeds: number | null;
+      sale_amount_allocated: number | null;
+      total_cost: number | null;
       realized_gain: number | null;
     }>;
   };
@@ -70,6 +136,11 @@ function toNumber(value: number | string | null | undefined): number | null {
   }
 
   return null;
+}
+
+function toPositiveAmount(value: number | string | null | undefined): number | null {
+  const parsed = toNumber(value);
+  return parsed === null ? null : Math.abs(parsed);
 }
 
 function normalizeCurrency(value: string | null | undefined): string | null {
@@ -93,33 +164,174 @@ function operationPriority(operationType: string): number {
   return 2;
 }
 
-export function deriveLotsFromOperations(input: {
+function sortOperations(left: RuntimeOperationRow, right: RuntimeOperationRow): number {
+  const byDate = new Date(left.operation_date).getTime() - new Date(right.operation_date).getTime();
+  if (byDate !== 0) {
+    return byDate;
+  }
+
+  const byPriority = operationPriority(left.operation_type) - operationPriority(right.operation_type);
+  if (byPriority !== 0) {
+    return byPriority;
+  }
+
+  const leftCreated = left.created_at ? new Date(left.created_at).getTime() : 0;
+  const rightCreated = right.created_at ? new Date(right.created_at).getTime() : 0;
+  if (leftCreated !== rightCreated) {
+    return leftCreated - rightCreated;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function sumNumbers(values: Array<number | null>): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  if (values.some((value) => value === null)) {
+    return null;
+  }
+
+  const numericValues = values.filter((value): value is number => value !== null);
+  return roundValue(
+    numericValues.reduce((sum, value) => sum + value, 0),
+    4
+  );
+}
+
+export function summarizeSalesFromOperations(input: {
+  operations: RuntimeOperationRow[];
+  allocations: PersistedSaleAllocationRow[];
+}): FiscalSaleSummary[] {
+  const allocationsBySale = new Map<string, PersistedSaleAllocationRow[]>();
+
+  for (const allocation of input.allocations) {
+    const current = allocationsBySale.get(allocation.sale_operation_id) ?? [];
+    current.push(allocation);
+    allocationsBySale.set(allocation.sale_operation_id, current);
+  }
+
+  return [...input.operations]
+    .filter((operation) => operation.operation_type === "VENTA")
+    .sort(sortOperations)
+    .map((operation) => {
+      const saleQuantity = toNumber(operation.quantity);
+      const normalizedQuantity = saleQuantity === null ? null : roundValue(Math.abs(saleQuantity), 6);
+      const saleAmount = toPositiveAmount(operation.amount);
+      const allocations = allocationsBySale.get(operation.id) ?? [];
+      const quantityAllocated = roundValue(
+        allocations.reduce((sum, allocation) => sum + Math.abs(toNumber(allocation.quantity) ?? 0), 0),
+        6
+      );
+      const missingQuantity =
+        normalizedQuantity === null ? 0 : roundValue(Math.max(normalizedQuantity - quantityAllocated, 0), 6);
+
+      const saleAmountAllocated = sumNumbers(
+        allocations.map((allocation) => {
+          const value = toNumber(allocation.sale_amount_allocated);
+          return value === null ? null : roundValue(Math.abs(value), 4);
+        })
+      );
+      const costBasis = sumNumbers(
+        allocations.map((allocation) => {
+          const value = toNumber(allocation.total_cost);
+          return value === null ? null : roundValue(Math.abs(value), 4);
+        })
+      );
+      const realizedGain = sumNumbers(
+        allocations.map((allocation) => {
+          const value = toNumber(allocation.realized_gain);
+          return value === null ? null : roundValue(value, 4);
+        })
+      );
+
+      let status: FiscalSaleStatus = "MATCHED";
+      if (!operation.isin?.trim() || normalizedQuantity === null || normalizedQuantity <= 0) {
+        status = "INVALID_DATA";
+      } else if (missingQuantity > 0) {
+        status = "UNRESOLVED";
+      } else if (saleAmount === null || costBasis === null || realizedGain === null || saleAmountAllocated === null) {
+        status = "PENDING_COST_BASIS";
+      }
+
+      return {
+        sale_operation_id: operation.id,
+        operation_date: operation.operation_date,
+        isin: operation.isin?.trim().toUpperCase() ?? null,
+        description: operation.description ?? operation.manual_notes ?? null,
+        quantity: normalizedQuantity,
+        sale_amount: saleAmount,
+        sale_amount_allocated: saleAmountAllocated,
+        quantity_allocated: quantityAllocated,
+        missing_quantity: missingQuantity,
+        cost_basis: costBasis,
+        realized_gain: status === "MATCHED" ? realizedGain : null,
+        reported_realized_gain: toNumber(operation.realized_gain),
+        currency: normalizeCurrency(operation.currency),
+        allocations_count: allocations.length,
+        status,
+        source: operation.source
+      };
+    });
+}
+
+export function buildTradeEventsFromFiscalRuntime(input: {
+  operations: RuntimeOperationRow[];
+  saleSummaries: FiscalSaleSummary[];
+}): TradeEvent[] {
+  const summaryBySaleId = new Map(
+    input.saleSummaries.map((summary) => [summary.sale_operation_id, summary])
+  );
+
+  return [...input.operations]
+    .filter(
+      (operation) => operation.operation_type === "COMPRA" || operation.operation_type === "VENTA"
+    )
+    .sort(sortOperations)
+    .flatMap<TradeEvent>((operation) => {
+      const isin = operation.isin?.trim().toUpperCase();
+      const quantity = toNumber(operation.quantity);
+      if (!isin || quantity === null || Math.abs(quantity) <= 0) {
+        return [];
+      }
+
+      if (operation.operation_type === "COMPRA") {
+        return [
+          {
+            id: operation.id,
+            isin,
+            type: "BUY" as const,
+            tradeDate: operation.operation_date,
+            quantity: roundValue(Math.abs(quantity), 6),
+            assetKind: "LISTED" as const
+          }
+        ];
+      }
+
+      const summary = summaryBySaleId.get(operation.id);
+      return [
+        {
+          id: operation.id,
+          isin,
+          type: "SELL" as const,
+          tradeDate: operation.operation_date,
+          quantity: roundValue(Math.abs(quantity), 6),
+          gainLossEur: summary?.realized_gain ?? undefined,
+          assetKind: "LISTED" as const
+        }
+      ];
+    });
+}
+
+export function deriveFiscalRuntimeFromOperations(input: {
   expedienteId: string;
-  operations: OperationRow[];
-}): { lots: PersistedLot[]; issues: LotDerivationIssue[] } {
-  const sortedOperations = [...input.operations].sort((left, right) => {
-    const byDate =
-      new Date(left.operation_date).getTime() - new Date(right.operation_date).getTime();
-    if (byDate !== 0) {
-      return byDate;
-    }
-
-    const byPriority = operationPriority(left.operation_type) - operationPriority(right.operation_type);
-    if (byPriority !== 0) {
-      return byPriority;
-    }
-
-    const leftCreated = left.created_at ? new Date(left.created_at).getTime() : 0;
-    const rightCreated = right.created_at ? new Date(right.created_at).getTime() : 0;
-    if (leftCreated !== rightCreated) {
-      return leftCreated - rightCreated;
-    }
-
-    return left.id.localeCompare(right.id);
-  });
-
+  operations: RuntimeOperationRow[];
+}): DerivedFiscalRuntime {
+  const sortedOperations = [...input.operations].sort(sortOperations);
   const lotsByIsin = new Map<string, MutableLot[]>();
-  const issues: LotDerivationIssue[] = [];
+  const allocations: PersistedSaleAllocation[] = [];
+  const issues: FiscalRuntimeIssue[] = [];
 
   for (const operation of sortedOperations) {
     if (!operation.isin?.trim()) {
@@ -127,7 +339,8 @@ export function deriveLotsFromOperations(input: {
         issues.push({
           code: "missing_isin",
           operation_id: operation.id,
-          message: `Operación ${operation.operation_type} sin ISIN; se excluye del runtime de lotes.`
+          message: `Operación ${operation.operation_type} sin ISIN; se excluye del runtime fiscal.`,
+          quantity: toNumber(operation.quantity)
         });
       }
       continue;
@@ -141,18 +354,18 @@ export function deriveLotsFromOperations(input: {
           code: "missing_quantity",
           operation_id: operation.id,
           isin,
-          message: `Operación ${operation.operation_type} de ${isin} sin cantidad válida; se excluye del runtime de lotes.`
+          message: `Operación ${operation.operation_type} de ${isin} sin cantidad válida; se excluye del runtime fiscal.`
         });
       }
       continue;
     }
 
     if (operation.operation_type === "COMPRA") {
-      const totalCost = toNumber(operation.amount);
-      const normalizedTotalCost =
-        totalCost === null ? null : roundValue(Math.abs(totalCost), 4);
+      const totalCost = toPositiveAmount(operation.amount);
+      const normalizedTotalCost = totalCost === null ? null : roundValue(totalCost, 4);
       const unitCost =
         normalizedTotalCost === null ? null : roundValue(normalizedTotalCost / quantity, 8);
+
       const lot: MutableLot = {
         id: crypto.randomUUID(),
         expediente_id: input.expedienteId,
@@ -183,6 +396,18 @@ export function deriveLotsFromOperations(input: {
       continue;
     }
 
+    const saleTotalAmount = toPositiveAmount(operation.amount);
+    if (saleTotalAmount === null) {
+      issues.push({
+        code: "missing_sale_amount",
+        operation_id: operation.id,
+        isin,
+        quantity,
+        message: `Venta de ${isin} sin importe total; no se puede cerrar la ganancia/pérdida fiscal.`
+      });
+    }
+
+    const saleUnitPrice = saleTotalAmount === null ? null : roundValue(saleTotalAmount / quantity, 8);
     const existingLots = lotsByIsin.get(isin) ?? [];
     let remaining = quantity;
 
@@ -196,16 +421,62 @@ export function deriveLotsFromOperations(input: {
       }
 
       const allocatedQuantity = Math.min(remaining, lot.quantity_open);
-      lot.quantity_open = roundValue(lot.quantity_open - allocatedQuantity, 6);
-      lot.quantity_sold = roundValue(lot.quantity_sold + allocatedQuantity, 6);
-      lot.metadata.sales.push({
-        operation_id: operation.id,
-        operation_date: operation.operation_date,
-        quantity: roundValue(allocatedQuantity, 6),
-        proceeds: toNumber(operation.amount),
-        realized_gain: toNumber(operation.realized_gain)
+      const normalizedAllocatedQuantity = roundValue(allocatedQuantity, 6);
+      const totalCost =
+        lot.unit_cost === null ? null : roundValue(lot.unit_cost * normalizedAllocatedQuantity, 4);
+      const saleAmountAllocated =
+        saleUnitPrice === null ? null : roundValue(saleUnitPrice * normalizedAllocatedQuantity, 4);
+      const realizedGain =
+        saleAmountAllocated === null || totalCost === null
+          ? null
+          : roundValue(saleAmountAllocated - totalCost, 4);
+      const allocationId = crypto.randomUUID();
+
+      allocations.push({
+        id: allocationId,
+        expediente_id: input.expedienteId,
+        sale_operation_id: operation.id,
+        lot_id: lot.id,
+        acquisition_operation_id: lot.acquisition_operation_id,
+        isin,
+        sale_date: operation.operation_date,
+        acquisition_date: lot.acquisition_date,
+        quantity: normalizedAllocatedQuantity,
+        sale_unit_price: saleUnitPrice,
+        sale_amount_allocated: saleAmountAllocated,
+        unit_cost: lot.unit_cost,
+        total_cost: totalCost,
+        realized_gain: realizedGain,
+        currency: normalizeCurrency(operation.currency ?? lot.currency),
+        source: operation.source,
+        metadata: {
+          sale_description: operation.description ?? operation.manual_notes ?? null,
+          lot_description: lot.description
+        }
       });
-      remaining = roundValue(remaining - allocatedQuantity, 6);
+
+      lot.quantity_open = roundValue(lot.quantity_open - normalizedAllocatedQuantity, 6);
+      lot.quantity_sold = roundValue(lot.quantity_sold + normalizedAllocatedQuantity, 6);
+      lot.metadata.sales.push({
+        allocation_id: allocationId,
+        sale_operation_id: operation.id,
+        operation_date: operation.operation_date,
+        quantity: normalizedAllocatedQuantity,
+        sale_amount_allocated: saleAmountAllocated,
+        total_cost: totalCost,
+        realized_gain: realizedGain
+      });
+      remaining = roundValue(remaining - normalizedAllocatedQuantity, 6);
+
+      if (lot.unit_cost === null) {
+        issues.push({
+          code: "missing_cost_basis",
+          operation_id: operation.id,
+          isin,
+          quantity: normalizedAllocatedQuantity,
+          message: `Venta de ${isin} consumiendo un lote sin coste fiscal calculable.`
+        });
+      }
     }
 
     if (remaining > 0) {
@@ -230,8 +501,7 @@ export function deriveLotsFromOperations(input: {
       })
     )
     .sort((left, right) => {
-      const byDate =
-        new Date(left.acquisition_date).getTime() - new Date(right.acquisition_date).getTime();
+      const byDate = new Date(left.acquisition_date).getTime() - new Date(right.acquisition_date).getTime();
       if (byDate !== 0) {
         return byDate;
       }
@@ -239,10 +509,31 @@ export function deriveLotsFromOperations(input: {
       return left.id.localeCompare(right.id);
     });
 
-  return { lots, issues };
+  const saleSummaries = summarizeSalesFromOperations({
+    operations: sortedOperations,
+    allocations
+  });
+
+  return {
+    lots,
+    allocations,
+    saleSummaries,
+    issues
+  };
 }
 
-export async function rebuildExpedienteLots(
+export function deriveLotsFromOperations(input: {
+  expedienteId: string;
+  operations: RuntimeOperationRow[];
+}): { lots: PersistedLot[]; issues: FiscalRuntimeIssue[] } {
+  const runtime = deriveFiscalRuntimeFromOperations(input);
+  return {
+    lots: runtime.lots,
+    issues: runtime.issues
+  };
+}
+
+export async function rebuildExpedienteFiscalRuntime(
   supabase: SupabaseClient,
   expedienteId: string
 ): Promise<void> {
@@ -256,29 +547,46 @@ export async function rebuildExpedienteLots(
     .order("created_at", { ascending: true });
 
   if (operationsError) {
-    throw new Error(`No se pudieron cargar operaciones para recalcular lotes: ${operationsError.message}`);
+    throw new Error(`No se pudieron cargar operaciones para recalcular el runtime fiscal: ${operationsError.message}`);
   }
 
-  const { lots } = deriveLotsFromOperations({
+  const runtime = deriveFiscalRuntimeFromOperations({
     expedienteId,
-    operations: (operations ?? []) as OperationRow[]
+    operations: (operations ?? []) as RuntimeOperationRow[]
   });
 
-  const { error: deleteError } = await supabase
+  const { error: deleteAllocationsError } = await supabase
+    .from(dbTables.saleAllocations)
+    .delete()
+    .eq("expediente_id", expedienteId);
+
+  if (deleteAllocationsError) {
+    throw new Error(`No se pudieron limpiar asignaciones FIFO previas: ${deleteAllocationsError.message}`);
+  }
+
+  const { error: deleteLotsError } = await supabase
     .from(dbTables.lots)
     .delete()
     .eq("expediente_id", expedienteId);
 
-  if (deleteError) {
-    throw new Error(`No se pudieron limpiar lotes previos: ${deleteError.message}`);
+  if (deleteLotsError) {
+    throw new Error(`No se pudieron limpiar lotes previos: ${deleteLotsError.message}`);
   }
 
-  if (lots.length === 0) {
-    return;
+  if (runtime.lots.length > 0) {
+    const { error: insertLotsError } = await supabase.from(dbTables.lots).insert(runtime.lots);
+    if (insertLotsError) {
+      throw new Error(`No se pudieron persistir lotes derivados: ${insertLotsError.message}`);
+    }
   }
 
-  const { error: insertError } = await supabase.from(dbTables.lots).insert(lots);
-  if (insertError) {
-    throw new Error(`No se pudieron persistir lotes derivados: ${insertError.message}`);
+  if (runtime.allocations.length > 0) {
+    const { error: insertAllocationsError } = await supabase
+      .from(dbTables.saleAllocations)
+      .insert(runtime.allocations);
+
+    if (insertAllocationsError) {
+      throw new Error(`No se pudieron persistir asignaciones FIFO: ${insertAllocationsError.message}`);
+    }
   }
 }

@@ -11,7 +11,7 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 
 - **Motor de Reglas**
   - Implementado: `packages/rules/src/index.ts`, `apps/web/lib/rules/validation.ts`
-  - Estado: recompras 2/12 meses + FIFO inicial + runtime de lotes derivados en expediente
+  - Estado: recompras 2/12 meses + runtime FIFO con lotes y asignaciones de venta persistidas
 
 - **Operativa de despacho**
   - Implementado: `apps/web/app/clientes`, `apps/web/app/configuracion`, `apps/web/lib/auth.ts`
@@ -51,7 +51,7 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 ## Gaps explicitos para proxima iteracion
 
 1. OCR real sobre PDF escaneado / imagen / Excel
-2. FIFO fiscal completo con ajustes manuales, herencias, transferencias y bloqueo de perdidas operable
+2. Ajustes manuales, herencias, transferencias y bloqueo de perdidas operable sobre el runtime fiscal ya persistido
 3. Integracion oficial BOE y Registro Mercantil
 4. Export AEAT plenamente conforme por modelo y ejercicio
 5. SSO corporativo y gobierno operativo completo
