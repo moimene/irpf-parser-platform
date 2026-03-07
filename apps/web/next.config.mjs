@@ -5,16 +5,6 @@ const nextConfig = {
   // Vercel despliega correctamente con output standalone
   output: "standalone",
 
-  // ESLint y TypeScript no bloquean el build en CI (validados por separado con tsc --noEmit)
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    // Los errores de prerender de páginas de error del sistema (/_error) son un bug
-    // de Next.js 14 en entornos con NODE_ENV no estándar; no afectan al deploy en Vercel
-    ignoreBuildErrors: true,
-  },
-
   // Cabeceras de seguridad para producción
   async headers() {
     return [

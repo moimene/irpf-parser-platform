@@ -20,6 +20,10 @@ export default function HomePage() {
           <Link href="/expedientes/demo-irpf-2025">
             <strong>Abrir expediente demo</strong>
           </Link>
+          {" · "}
+          <Link href="/clientes">
+            <strong>Entrar en clientes</strong>
+          </Link>
         </p>
       </section>
 

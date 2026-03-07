@@ -24,6 +24,11 @@ type WorkflowEvent = {
  createdAt: string;
 };
 type ReviewPayload = {
+ current_user?: {
+ reference: string;
+ display_name: string;
+ role: "admin" | "fiscal_senior" | "fiscal_junior" | "solo_lectura";
+ };
  pending_documents: PendingDocument[];
  open_alerts: OpenAlert[];
  workflow_events: WorkflowEvent[];
@@ -52,12 +57,17 @@ export function ReviewBoard() {
  const [payload, setPayload] = useState<ReviewPayload>(initialPayload);
  const [actionLoading, setActionLoading] = useState<string | null>(null);
  const [actionResults, setActionResults] = useState<Record<string, ReviewActionResult>>({});
+ const [error, setError] = useState<string | null>(null);
 
  async function load() {
  const response = await fetch("/api/review", { cache: "no-store" });
- if (!response.ok) return;
- const body = (await response.json()) as ReviewPayload;
- setPayload(body);
+ const body = (await response.json()) as ReviewPayload | { error: string };
+ if (!response.ok) {
+ setError((body as { error: string }).error ?? "No se pudo cargar la cola de revisión");
+ return;
+ }
+ setPayload(body as ReviewPayload);
+ setError(null);
  }
 
  useEffect(() => {
@@ -105,7 +115,13 @@ export function ReviewBoard() {
  <div className="page">
  <section className="card">
  <h2>Documentos pendientes de revisión</h2>
- {payload.pending_documents.length === 0 ? (
+ {payload.current_user ? (
+ <p className="muted">
+ Sesión activa: <strong>{payload.current_user.display_name}</strong> · {payload.current_user.role}
+ </p>
+ ) : null}
+ {error ? <p className="badge danger" style={{ marginBottom: "12px" }}>{error}</p> : null}
+ {error ? null : payload.pending_documents.length === 0 ? (
  <p className="muted">Sin documentos pendientes. </p>
  ) : (
  <div className="table-wrap">
@@ -168,7 +184,7 @@ export function ReviewBoard() {
  )}
  </section>
 
- <section className="card">
+ {!error ? <section className="card">
  <h2>Alertas fiscales abiertas</h2>
  {payload.open_alerts.length === 0 ? (
  <p className="muted">No hay alertas abiertas. </p>
@@ -198,9 +214,9 @@ export function ReviewBoard() {
  </table>
  </div>
  )}
- </section>
+ </section> : null}
 
- <section className="card">
+ {!error ? <section className="card">
  <h2>Eventos de workflow recientes</h2>
  {payload.workflow_events.length === 0 ? (
  <p className="muted">Sin eventos registrados aún.</p>
@@ -228,7 +244,7 @@ export function ReviewBoard() {
  </table>
  </div>
  )}
- </section>
+ </section> : null}
  </div>
  );
 }

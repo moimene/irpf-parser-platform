@@ -1,10 +1,20 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  accessErrorMessage,
+  accessErrorStatus,
+  assertClientAccess,
+  assertExpedienteAccess,
+  getCurrentSessionUser,
+  listAccessibleClientIds,
+  requirePermission
+} from "@/lib/auth";
 import type { ParseDocumentResponse, ProcessingStatus } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId, isUuid } from "@/lib/expediente-id";
 import { emitWorkflowEvent } from "@/lib/events";
 import { env } from "@/lib/env";
+import { buildOperationsFromRecords, replaceDocumentOperations } from "@/lib/operations";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 const MAX_PARSE_FILE_BYTES = 15 * 1024 * 1024;
@@ -141,6 +151,17 @@ async function processWithParser(payload: {
       throw new Error(`No se pudo guardar extracción: ${extractionError.message}`);
     }
 
+    if (!parsed.requires_manual_review) {
+      const operations = buildOperationsFromRecords({
+        records: parsed.records,
+        expedienteId: payload.expedienteId,
+        documentId: payload.documentId,
+        source: "AUTO"
+      });
+
+      await replaceDocumentOperations(supabase, payload.documentId, payload.expedienteId, operations);
+    }
+
     await emitWorkflowEvent(
       parsed.requires_manual_review ? "manual.review.required" : "parse.completed",
       payload.documentId,
@@ -196,88 +217,151 @@ export async function POST(request: Request) {
     );
   }
 
-  const { expediente_id: expedienteReference, client_id: clientIdRaw, documents, uploaded_by: uploadedBy } =
-    parsed.data;
+  try {
+    const sessionUser = await getCurrentSessionUser(supabase);
+    requirePermission(sessionUser, "documents.intake");
 
-  const resolvedExpediente = normalizeExpedienteId(expedienteReference);
-  const clientId = clientIdRaw && isUuid(clientIdRaw) ? clientIdRaw : null;
+    const {
+      expediente_id: expedienteReference,
+      client_id: clientIdRaw,
+      documents
+    } = parsed.data;
 
-  const { error: expedienteError } = await supabase.from(dbTables.expedientes).upsert(
-    {
-      id: resolvedExpediente.id,
-      reference: resolvedExpediente.reference,
-      client_id: clientId,
-      fiscal_year: new Date().getFullYear(),
-      model_type: "IRPF",
-      title: `Expediente ${resolvedExpediente.reference}`,
-      status: "BORRADOR"
-    },
-    { onConflict: "id" }
-  );
+    const resolvedExpediente = normalizeExpedienteId(expedienteReference);
+    const clientId = clientIdRaw && isUuid(clientIdRaw) ? clientIdRaw : null;
+    const { data: existingExpediente, error: existingExpedienteError } = await supabase
+      .from(dbTables.expedientes)
+      .select("id, client_id")
+      .eq("id", resolvedExpediente.id)
+      .maybeSingle();
 
-  if (expedienteError) {
-    return NextResponse.json(
+    if (existingExpedienteError) {
+      return NextResponse.json(
+        { error: `No se pudo validar expediente: ${existingExpedienteError.message}` },
+        { status: 500 }
+      );
+    }
+
+    let inferredClientId: string | null = null;
+
+    if (existingExpediente) {
+      await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "documents.intake");
+
+      if (existingExpediente.client_id && clientId && existingExpediente.client_id !== clientId) {
+        return NextResponse.json(
+          { error: "El expediente ya está asociado a otro cliente y no puede cambiarse desde intake." },
+          { status: 409 }
+        );
+      }
+
+      if (!existingExpediente.client_id && clientId) {
+        await assertClientAccess(supabase, sessionUser, clientId, "documents.intake");
+      }
+    } else if (clientId) {
+      await assertClientAccess(supabase, sessionUser, clientId, "documents.intake");
+    } else {
+      const accessibleClientIds = await listAccessibleClientIds(supabase, sessionUser);
+      if (accessibleClientIds.length === 1) {
+        inferredClientId = accessibleClientIds[0];
+        await assertClientAccess(supabase, sessionUser, inferredClientId, "documents.intake");
+      } else {
+        return NextResponse.json(
+          { error: "Debes asociar el expediente a un cliente antes de ingestar documentos." },
+          { status: 400 }
+        );
+      }
+    }
+
+    const resolvedClientId = clientId ?? existingExpediente?.client_id ?? inferredClientId ?? null;
+    const effectiveUploadedBy = sessionUser.reference;
+
+    const { error: expedienteError } = await supabase.from(dbTables.expedientes).upsert(
       {
-        error: `No se pudo crear/actualizar expediente: ${expedienteError.message}`
+        id: resolvedExpediente.id,
+        reference: resolvedExpediente.reference,
+        client_id: resolvedClientId,
+        fiscal_year: new Date().getFullYear(),
+        model_type: "IRPF",
+        title: `Expediente ${resolvedExpediente.reference}`,
+        status: "BORRADOR"
       },
-      { status: 500 }
+      { onConflict: "id" }
+    );
+
+    if (expedienteError) {
+      return NextResponse.json(
+        {
+          error: `No se pudo crear/actualizar expediente: ${expedienteError.message}`
+        },
+        { status: 500 }
+      );
+    }
+
+    const items = await Promise.all(
+      documents.map(async (document) => {
+        const documentId = crypto.randomUUID();
+
+        const { error: documentError } = await supabase.from(dbTables.documents).insert({
+          id: documentId,
+          expediente_id: resolvedExpediente.id,
+          filename: document.filename,
+          storage_path: document.storage_path,
+          source_type: document.source_type ?? "PDF",
+          processing_status: "queued",
+          metadata: {
+            uploaded_by: effectiveUploadedBy,
+            entity_hint: document.entity_hint,
+            expediente_reference: resolvedExpediente.reference
+          }
+        });
+
+        if (documentError) {
+          throw new Error(`No se pudo insertar documento ${document.filename}: ${documentError.message}`);
+        }
+
+        await emitWorkflowEvent("parse.started", documentId, resolvedExpediente.id, {
+          filename: document.filename,
+          source_type: document.source_type ?? "PDF",
+          uploaded_by: effectiveUploadedBy,
+          expediente_reference: resolvedExpediente.reference
+        });
+
+        if (env.autoParseOnIntake) {
+          void processWithParser({
+            documentId,
+            expedienteId: resolvedExpediente.id,
+            filename: document.filename,
+            storagePath: document.storage_path,
+            contentBase64: document.content_base64,
+            entityHint: document.entity_hint
+          });
+        }
+
+        return {
+          document_id: documentId,
+          expediente_id: resolvedExpediente.id,
+          status: "queued" as const
+        };
+      })
+    );
+
+    return NextResponse.json({
+      document_id: items[0].document_id,
+      expediente_id: resolvedExpediente.id,
+      expediente_reference: resolvedExpediente.reference,
+      status: items[0].status,
+      accepted: items.length,
+      items,
+      current_user: {
+        reference: sessionUser.reference,
+        display_name: sessionUser.display_name,
+        role: sessionUser.role
+      }
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: accessErrorMessage(error, "No se pudo completar la ingesta") },
+      { status: accessErrorStatus(error) }
     );
   }
-
-  const items = await Promise.all(
-    documents.map(async (document) => {
-      const documentId = crypto.randomUUID();
-
-      const { error: documentError } = await supabase.from(dbTables.documents).insert({
-        id: documentId,
-        expediente_id: resolvedExpediente.id,
-        filename: document.filename,
-        storage_path: document.storage_path,
-        source_type: document.source_type ?? "PDF",
-        processing_status: "queued",
-        metadata: {
-          uploaded_by: uploadedBy,
-          entity_hint: document.entity_hint,
-          expediente_reference: resolvedExpediente.reference
-        }
-      });
-
-      if (documentError) {
-        throw new Error(`No se pudo insertar documento ${document.filename}: ${documentError.message}`);
-      }
-
-      await emitWorkflowEvent("parse.started", documentId, resolvedExpediente.id, {
-        filename: document.filename,
-        source_type: document.source_type ?? "PDF",
-        uploaded_by: uploadedBy ?? "system",
-        expediente_reference: resolvedExpediente.reference
-      });
-
-      if (env.autoParseOnIntake) {
-        void processWithParser({
-          documentId,
-          expedienteId: resolvedExpediente.id,
-          filename: document.filename,
-          storagePath: document.storage_path,
-          contentBase64: document.content_base64,
-          entityHint: document.entity_hint
-        });
-      }
-
-      return {
-        document_id: documentId,
-        expediente_id: resolvedExpediente.id,
-        status: "queued" as const
-      };
-    })
-  );
-
-  return NextResponse.json({
-    document_id: items[0].document_id,
-    expediente_id: resolvedExpediente.id,
-    expediente_reference: resolvedExpediente.reference,
-    status: items[0].status,
-    accepted: items.length,
-    items
-  });
 }

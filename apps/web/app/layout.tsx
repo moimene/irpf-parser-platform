@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
+import { Montserrat } from "next/font/google";
 import Link from "next/link";
+import { SessionSwitcher } from "@/components/session-switcher";
 import "./globals.css";
+
+const montserrat = Montserrat({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  display: "swap"
+});
 
 export const metadata: Metadata = {
   title: "IRPF Parser Console",
@@ -9,15 +17,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="es">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&display=swap"
-          rel="stylesheet"
-        />
-      </head>
+    <html lang="es" className={montserrat.className}>
       <body>
         <div className="app-frame">
           <aside className="sidebar" aria-label="Navegación principal">
@@ -29,11 +29,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/" className="sidebar-link">
                 Dashboard operativo
               </Link>
+              <Link href="/clientes" className="sidebar-link">
+                Clientes
+              </Link>
               <Link href="/expedientes/demo-irpf-2025" className="sidebar-link">
                 Expediente demo
               </Link>
               <Link href="/review" className="sidebar-link">
                 Revisión manual
+              </Link>
+              <Link href="/configuracion" className="sidebar-link">
+                Configuración
               </Link>
             </nav>
             <div className="sidebar-meta">
@@ -48,10 +54,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <p className="topbar-title">Panel de Control Fiscal</p>
                 <p className="topbar-subtitle">Trazabilidad completa de extracción, reglas y exportación AEAT</p>
               </div>
-              <div className="topbar-chips" aria-label="Estado del entorno">
-                <span className="chip success">Producción</span>
-                <span className="chip">Parser conectado</span>
-                <span className="chip">Workflow n8n</span>
+              <div className="topbar-actions">
+                <SessionSwitcher />
+                <div className="topbar-chips" aria-label="Estado del entorno">
+                  <span className="chip success">Producción</span>
+                  <span className="chip">Parser conectado</span>
+                  <span className="chip">Workflow n8n</span>
+                </div>
               </div>
             </header>
             <main className="main-content">{children}</main>

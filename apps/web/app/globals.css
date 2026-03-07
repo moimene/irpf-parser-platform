@@ -204,6 +204,40 @@ a:hover {
   gap: 8px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.session-switcher {
+  min-width: 320px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--g-border-subtle);
+  border-radius: var(--g-radius-lg);
+  background: color-mix(in srgb, var(--g-surface-card) 76%, var(--g-surface-subtle));
+}
+
+.session-summary {
+  display: grid;
+  gap: 2px;
+}
+
+.session-control {
+  display: grid;
+  gap: 6px;
+}
+
+.session-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--g-text-secondary);
+}
+
 .chip {
   border-radius: var(--g-radius-full);
   padding: 4px 9px;
@@ -512,6 +546,16 @@ td {
   .topbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .session-switcher {
+    min-width: 0;
+    width: 100%;
   }
 
   .topbar-chips {
