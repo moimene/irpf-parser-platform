@@ -35,6 +35,7 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 - `POST /parse-document` -> implementada
 - Webhooks n8n `parse.*` -> implementados
 - `GET /api/exports/:expediente_id?model=100|714|720` -> implementada
+- `GET /api/review/:extraction_id` -> implementada
 - `PATCH /api/review/:extraction_id` -> implementada
 - `POST /api/access/users` -> implementada
 
@@ -50,9 +51,10 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 
 ## Gaps explicitos para proxima iteracion
 
-1. OCR real sobre PDF escaneado / imagen / Excel
+1. OCR real sobre PDF escaneado / imagen / Excel y backend documental mas rico para `structured_document`
 2. Cierre fiscal explicable y overrides avanzados sobre el runtime fiscal ya persistido
 3. Integracion oficial BOE y Registro Mercantil
 4. Export AEAT plenamente conforme por modelo y ejercicio
 5. SSO corporativo y gobierno operativo completo
-6. Patrimonio y configuracion como modulos completos de despacho
+6. Trazabilidad estable de revision por celda/bbox y provenance auditable
+7. Patrimonio y configuracion como modulos completos de despacho

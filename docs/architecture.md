@@ -10,9 +10,9 @@
 - API `GET /api/exports/:expediente_id?model=100|714|720`
 - API `GET /api/expedientes/:id`
 - API `POST /api/webhooks/parse-event`
-- API `GET /api/review`, `PATCH /api/review/:extraction_id`
+- API `GET /api/review`, `GET /api/review/:extraction_id`, `PATCH /api/review/:extraction_id`
 - API `GET /api/dashboard`, `GET /api/extractions`
-- UI real: dashboard, clientes, ficha de cliente, expediente y cola de revision manual
+- UI real: dashboard, clientes, ficha de cliente, expediente y workspace de revision manual editable
 - Rutas heredadas `/login` y `/configuracion` solo como compatibilidad minima
 
 ## Capa Railway (`services/parser`)
@@ -50,9 +50,22 @@
 La arquitectura actual consolida el flujo critico de expediente y documentos, pero todavia no implementa de forma completa:
 
 - SSO corporativo,
-- editor de revisión con trazabilidad por celda/caja estable sobre el documento fuente,
+- trazabilidad por celda/caja estable sobre el documento fuente,
 - patrimonio y no cotizadas,
 - configuracion de plantillas y reglas como modulo de negocio.
+
+La capa de revision manual ya no es solo una cola:
+
+- `GET /api/review` lista documentos pendientes junto al ultimo `extraction_id` y metadatos de parsing.
+- `GET /api/review/:extraction_id` devuelve records y `structured_document` normalizados para edicion.
+- `PATCH /api/review/:extraction_id` soporta guardar borrador (`request_correction`) o aprobar/rechazar persistiendo correcciones sobre `normalized_payload.records`.
+- `apps/web/components/review-board.tsx` renderiza seleccion de documento, editor por registro/campo y visor lateral del `structured_document`.
+
+Limitacion vigente de esta capa:
+
+- la UI ya es operativa para editar,
+- pero la procedencia sigue anclada a `source_spans` con `page/start/end/snippet`,
+- no a celdas o bounding boxes estables del backend documental.
 
 La trazabilidad de perdidas bloqueadas ya forma parte del runtime operativo:
 

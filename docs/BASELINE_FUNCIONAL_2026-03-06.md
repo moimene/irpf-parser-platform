@@ -60,6 +60,7 @@ No es todavia una plataforma completa de campana fiscal para despacho.
 - `POST /api/documents/upload-urls`
 - `POST /api/documents/intake`
 - `GET /api/review`
+- `GET /api/review/[extraction_id]`
 - `PATCH /api/review/[extraction_id]`
 - `GET /api/extractions`
 - `GET /api/exports/[expediente_id]`
@@ -88,7 +89,7 @@ La suite E2E cubre:
 | Subida segura a storage | Implementado | `apps/web/app/api/documents/upload-urls/route.ts` | Operativa valida con signed URLs. |
 | Parser por entidad | Parcial | `services/parser/app/parser_engine.py` | Cobertura real: `Pictet`, `Goldman Sachs`, `Citi`. |
 | OCR / imagen / Excel | No completo | `services/parser/app/parser_engine.py` | Runtime real sigue centrado en PDF/texto. |
-| Revision manual | Implementado parcial | `apps/web/app/api/review/[extraction_id]/route.ts` | Aprobacion o rechazo funcional; la correccion ya parchea records aprobados, pero falta UI de edicion lado a lado. |
+| Revision manual | Implementado parcial | `apps/web/app/api/review/[extraction_id]/route.ts`, `apps/web/components/review-board.tsx` | Existe ya edicion real por record/campo y visor de `structured_document`; sigue faltando trazabilidad estable por celda/bbox. |
 | Expediente operativo | Implementado | `apps/web/app/api/expedientes/[id]/route.ts` | Estado, cliente, documentos, exportes. |
 | Dashboard operativo | Implementado | `apps/web/app/api/dashboard/route.ts` | Metricas base de operacion. |
 | Motor fiscal IRPF | Parcial avanzada | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts`, `apps/web/lib/fiscal-adjustments.ts` | Runtime fiscal con lotes, asignaciones FIFO, pérdidas bloqueadas y ajustes manuales persistidos; falta cierre de dominio completo y modulos fiscales posteriores. |
@@ -177,7 +178,7 @@ Ya construido en esta primera slice:
 Siguiente foco del track:
 
 - Cierre fiscal explicable sobre el runtime ya persistido.
-- Review editable real con trazabilidad estable al origen estructurado.
+- Trazabilidad estable al origen estructurado para que la revision no dependa de snippets por substring.
 - Patrimonio/IP y AEAT completa como siguientes modulos de dominio.
 
 ### Track 2b. Endurecimiento parser y review
@@ -186,7 +187,8 @@ Siguiente foco del track:
 - `XLSX/CSV` por parseo determinista.
 - `PDF/DOCX/IMAGE` con capa estructurada candidata en `Docling`.
 - LLM solo para mapping semantico a schema cerrado.
-- Review con edicion efectiva por record/campo y trazabilidad estable al origen.
+- Review ya editable por record/campo sobre `structured_document`.
+- Siguiente hueco: provenance estable por pagina/tabla/fila/celda o bbox.
 
 ### Track 3. Patrimonio e IP
 
@@ -305,7 +307,36 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
   - `npm run typecheck --workspace apps/web`
   - `npm run lint --workspace apps/web`
   - `npm run build --workspace apps/web`
-  - `cd apps/web && E2E_BASE_URL=http://127.0.0.1:3104 npx playwright test` -> `15 passed`
+- `cd apps/web && E2E_BASE_URL=http://127.0.0.1:3104 npx playwright test` -> `15 passed`
+
+## Actualizacion 2026-03-08 review editable sobre structured_document
+
+- `apps/web/app/api/review/route.ts` devuelve ya el ultimo `extraction_id` y metadatos de parsing por documento pendiente para que la cola pueda abrir el detalle real de revision.
+- `apps/web/app/api/review/[extraction_id]/route.ts` expone `GET` de detalle y admite guardar borradores con `request_correction` persistiendo `corrected_fields` en `normalized_payload.records`.
+- `apps/web/lib/review-editor.ts` fija el contrato de la capa editorial:
+  - normalizacion de `records`,
+  - normalizacion de `structured_document`,
+  - payload de correccion reusable,
+  - y utilidades para relacionar registros con paginas y filas tabulares.
+- `apps/web/components/review-board.tsx` pasa a ser un workspace editable:
+  - seleccion de documento,
+  - edicion de tipo/fields por registro,
+  - guardado de borrador,
+  - aprobacion con persistencia,
+  - y panel lateral con paginas, tablas y snippets del `structured_document`.
+- La deuda cambia de sitio:
+  - la edicion real ya existe,
+  - pero `source_spans` siguen siendo `page/start/end/snippet` y no referencias estables a celda o bbox.
+- Cobertura añadida:
+  - `apps/web/e2e/review-editor.spec.ts`
+  - ampliacion de `apps/web/e2e/critical-flows.spec.ts` para editar y aprobar una compra CSV de baja confianza.
+- Verificacion ejecutada:
+  - `npm run typecheck --workspace apps/web`
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd apps/web && npx playwright test e2e/review-editor.spec.ts` -> `3 passed`
+  - `cd apps/web && npx playwright test` -> `13 passed, 6 skipped`
+- Esta slice queda cerrada en codigo y documentacion; falta merge/deploy si se quiere alinear produccion con este estado.
 
 ## Decision de gobierno
 

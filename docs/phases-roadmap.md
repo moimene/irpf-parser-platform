@@ -45,7 +45,7 @@ Pendiente para cerrar:
 
 - FIFO fiscal completo
 - Cierre fiscal explicable y reglas de dominio avanzadas
-- Review editable real con trazabilidad estructurada
+- Trazabilidad estructurada estable por pagina/tabla/fila/celda o bbox
 
 Fase 2 queda abierta con la primera slice vertical ya operativa.
 
