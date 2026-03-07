@@ -62,6 +62,10 @@ def test_csv_builds_structured_document_and_records() -> None:
     assert response.structured_document.source_type == "CSV"
     assert response.structured_document.backend == "csv"
     assert response.structured_document.pages[0].tables
+    assert response.records[0].source_spans[0].structured_ref is not None
+    assert response.records[0].source_spans[0].structured_ref.kind == "table_row"
+    assert response.records[0].source_spans[0].structured_ref.table_id == "csv-1"
+    assert response.records[0].source_spans[0].structured_ref.row_index == 0
 
 
 def test_xlsx_builds_structured_document_and_records() -> None:
@@ -93,3 +97,7 @@ def test_xlsx_builds_structured_document_and_records() -> None:
     assert response.structured_document.source_type == "XLSX"
     assert response.structured_document.backend == "xlsx"
     assert response.structured_document.pages[0].tables
+    assert response.records[0].source_spans[0].structured_ref is not None
+    assert response.records[0].source_spans[0].structured_ref.kind == "table_row"
+    assert response.records[0].source_spans[0].structured_ref.table_id == "xlsx-1"
+    assert response.records[0].source_spans[0].structured_ref.row_index == 0

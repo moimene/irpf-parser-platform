@@ -56,5 +56,5 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 3. Integracion oficial BOE y Registro Mercantil
 4. Export AEAT plenamente conforme por modelo y ejercicio
 5. SSO corporativo y gobierno operativo completo
-6. Trazabilidad estable de revision por celda/bbox y provenance auditable
+6. Provenance auditable por celda/bbox sobre el backend documental
 7. Patrimonio y configuracion como modulos completos de despacho

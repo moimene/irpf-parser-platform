@@ -68,7 +68,38 @@ function cloneSourceSpans(value: unknown): SourceSpan[] {
         page,
         start,
         end,
-        snippet: typeof item.snippet === "string" ? item.snippet : undefined
+        snippet: typeof item.snippet === "string" ? item.snippet : undefined,
+        structured_ref:
+          item.structured_ref && isObject(item.structured_ref)
+            ? {
+                kind:
+                  item.structured_ref.kind === "page_text" ||
+                  item.structured_ref.kind === "table_header" ||
+                  item.structured_ref.kind === "table_row"
+                    ? item.structured_ref.kind
+                    : "page_text",
+                table_id:
+                  typeof item.structured_ref.table_id === "string"
+                    ? item.structured_ref.table_id
+                    : null,
+                row_index:
+                  typeof item.structured_ref.row_index === "number" &&
+                  Number.isFinite(item.structured_ref.row_index)
+                    ? item.structured_ref.row_index
+                    : null,
+                line_index:
+                  typeof item.structured_ref.line_index === "number" &&
+                  Number.isFinite(item.structured_ref.line_index)
+                    ? item.structured_ref.line_index
+                    : null,
+                column_indices: Array.isArray(item.structured_ref.column_indices)
+                  ? item.structured_ref.column_indices.filter(
+                      (column): column is number =>
+                        typeof column === "number" && Number.isFinite(column)
+                    )
+                  : []
+              }
+            : null
       }
     ];
   });

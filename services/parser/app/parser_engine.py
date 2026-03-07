@@ -5,7 +5,7 @@ Motor de parseo adaptativo en 3 niveles:
   Nivel 2 — Fallback LLM (GPT-4o-mini) para entidades desconocidas o baja extracción
   Nivel 3 — Escalado a revisión manual si confianza < umbral
 """
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from app.extractors import base as base_utils
 from app.extractors import citi, goldman, jpmorgan, pictet
@@ -18,6 +18,7 @@ from app.schemas import (
     SourceSpan,
 )
 from app.structured_document import (
+    StructuredLine,
     build_structured_document,
     flatten_structured_text,
     infer_source_type,
@@ -63,6 +64,25 @@ def _make_source_span(text: str, keyword: str, page: int = 1) -> SourceSpan:
     return SourceSpan(page=page, start=idx, end=end, snippet=snippet)
 
 
+def _read_source_span(candidate: Any) -> Optional[SourceSpan]:
+    if isinstance(candidate, SourceSpan):
+        return candidate
+
+    if not isinstance(candidate, dict):
+        return None
+
+    page = candidate.get("page")
+    start = candidate.get("start")
+    end = candidate.get("end")
+    if not all(isinstance(value, int) for value in [page, start, end]):
+        return None
+
+    try:
+        return SourceSpan.model_validate(candidate)
+    except Exception:
+        return None
+
+
 def _to_parsed_record(rec: ExtractedRecord, full_text: str) -> Tuple[ParsedRecord, SourceSpan]:
     fields = {
         "description": rec.description,
@@ -74,7 +94,11 @@ def _to_parsed_record(rec: ExtractedRecord, full_text: str) -> Tuple[ParsedRecor
         "quantity": rec.quantity,
     }
     fields = {k: v for k, v in fields.items() if v is not None}
-    span = _make_source_span(full_text, rec.description[:40] if rec.description else "", rec.page)
+    span = _read_source_span(rec.extra.get("source_span")) or _make_source_span(
+        full_text,
+        rec.description[:40] if rec.description else "",
+        rec.page,
+    )
     parsed = ParsedRecord(
         record_type=rec.record_type,  # type: ignore[arg-type]
         fields=fields,
@@ -86,8 +110,7 @@ def _to_parsed_record(rec: ExtractedRecord, full_text: str) -> Tuple[ParsedRecor
 
 def _build_record(
     *,
-    line: str,
-    page: int,
+    line: StructuredLine,
     op_type: str,
     base_confidence: float,
     template_name: str,
@@ -96,31 +119,32 @@ def _build_record(
 ) -> ExtractedRecord:
     return ExtractedRecord(
         record_type=op_type,
-        operation_date=base_utils.parse_date(line),
-        isin=base_utils.extract_isin(line),
-        description=line[:120],
-        amount=base_utils.parse_amount(line),
-        currency=base_utils.extract_currency(line) or (default_currency or "EUR"),
+        operation_date=base_utils.parse_date(line.text),
+        isin=base_utils.extract_isin(line.text),
+        description=line.text[:120],
+        amount=base_utils.parse_amount(line.text),
+        currency=base_utils.extract_currency(line.text) or (default_currency or "EUR"),
         retention=None,
         quantity=None,
-        page=page,
-        row_text=line,
+        page=line.page,
+        row_text=line.text,
         confidence=base_utils.confidence_from_fields(
-            base_utils.parse_date(line) is not None,
-            base_utils.parse_amount(line) is not None,
-            base_utils.extract_isin(line) is not None,
+            base_utils.parse_date(line.text) is not None,
+            base_utils.parse_amount(line.text) is not None,
+            base_utils.extract_isin(line.text) is not None,
             base_confidence,
         ),
         extra={
             "template": template_name,
             **({"section": section} if section else {}),
+            "source_span": line.source_span.model_dump(),
         },
     )
 
 
 def _extract_from_lines(
     entity: str,
-    lines: List[Tuple[str, int]],
+    lines: List[StructuredLine],
     *,
     template_name: str,
 ) -> List[ExtractedRecord]:
@@ -128,8 +152,8 @@ def _extract_from_lines(
 
     if entity == "GOLDMAN_SACHS":
         current_section = None
-        for raw_line, page in lines:
-            line = raw_line.strip()
+        for structured_line in lines:
+            line = structured_line.text.strip()
             if len(line) < 10:
                 continue
             section = goldman._detect_section_type(line)
@@ -143,8 +167,7 @@ def _extract_from_lines(
                     continue
             records.append(
                 _build_record(
-                    line=line,
-                    page=page,
+                    line=structured_line,
                     op_type=op_type,
                     base_confidence=0.85 if current_section else 0.78,
                     template_name=template_name,
@@ -156,8 +179,8 @@ def _extract_from_lines(
 
     if entity == "CITI":
         current_section = None
-        for raw_line, page in lines:
-            line = raw_line.strip()
+        for structured_line in lines:
+            line = structured_line.text.strip()
             if len(line) < 10:
                 continue
             section = citi._detect_citi_section(line)
@@ -171,8 +194,7 @@ def _extract_from_lines(
                     continue
             records.append(
                 _build_record(
-                    line=line,
-                    page=page,
+                    line=structured_line,
                     op_type=op_type,
                     base_confidence=0.83 if current_section else 0.75,
                     template_name=template_name,
@@ -182,8 +204,8 @@ def _extract_from_lines(
             )
         return records
 
-    for raw_line, page in lines:
-        line = raw_line.strip()
+    for structured_line in lines:
+        line = structured_line.text.strip()
         if len(line) < 15:
             continue
         op_type, base_conf = base_utils.detect_operation_type(line)
@@ -192,8 +214,7 @@ def _extract_from_lines(
         confidence_base = base_conf + 0.02 if entity == "PICTET" else base_conf - 0.05
         records.append(
             _build_record(
-                line=line,
-                page=page,
+                line=structured_line,
                 op_type=op_type,
                 base_confidence=confidence_base,
                 template_name=template_name,
@@ -204,7 +225,14 @@ def _extract_from_lines(
 
 
 def _extract_from_text(entity: str, text: str, *, template_name: str) -> List[ExtractedRecord]:
-    lines = [(line, 1) for line in text.splitlines()]
+    lines = [
+        StructuredLine(
+            text=line,
+            page=1,
+            source_span=_make_source_span(text, line, 1),
+        )
+        for line in text.splitlines()
+    ]
     return _extract_from_lines(entity, lines, template_name=template_name)
 
 

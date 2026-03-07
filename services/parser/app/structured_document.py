@@ -1,10 +1,25 @@
 import base64
 import csv
+from dataclasses import dataclass
 from io import BytesIO, StringIO
 from typing import List, Optional, Tuple
 
 from app.extractors.base import extract_text_from_pdf
-from app.schemas import ParseDocumentRequest, StructuredDocument, StructuredPage, StructuredTable
+from app.schemas import (
+    ParseDocumentRequest,
+    SourceSpan,
+    StructuredDocument,
+    StructuredPage,
+    StructuredRef,
+    StructuredTable,
+)
+
+
+@dataclass
+class StructuredLine:
+    text: str
+    page: int
+    source_span: SourceSpan
 
 
 def decode_content_bytes(content_base64: Optional[str]) -> Optional[bytes]:
@@ -112,29 +127,56 @@ def flatten_structured_text(document: StructuredDocument) -> str:
     return "\n\n".join(chunk for chunk in chunks if chunk).strip()
 
 
-def iter_structured_lines(document: StructuredDocument) -> List[Tuple[str, int]]:
-    lines: List[Tuple[str, int]] = []
+def iter_structured_lines(document: StructuredDocument) -> List[StructuredLine]:
+    lines: List[StructuredLine] = []
     seen: set[Tuple[int, str]] = set()
 
     for page in document.pages:
         for table in page.tables:
-            for row in [table.header, *table.rows]:
+            header_text = _row_to_text(table.header)
+            if header_text:
+                key = (page.page, header_text)
+                if key not in seen:
+                    seen.add(key)
+                    lines.append(
+                        StructuredLine(
+                            text=header_text,
+                            page=page.page,
+                            source_span=_make_table_span(
+                                page=page.page,
+                                table_id=table.table_id,
+                                row=table.header,
+                                kind="table_header",
+                            ),
+                        )
+                    )
+
+            for row_index, row in enumerate(table.rows):
                 row_text = _row_to_text(row)
                 if not row_text:
                     continue
                 key = (page.page, row_text)
                 if key not in seen:
                     seen.add(key)
-                    lines.append((row_text, page.page))
+                    lines.append(
+                        StructuredLine(
+                            text=row_text,
+                            page=page.page,
+                            source_span=_make_table_span(
+                                page=page.page,
+                                table_id=table.table_id,
+                                row=row,
+                                kind="table_row",
+                                row_index=row_index,
+                            ),
+                        )
+                    )
 
-        for raw_line in (page.text or "").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            key = (page.page, line)
+        for line in _iter_page_text_lines(page):
+            key = (page.page, line.text)
             if key not in seen:
                 seen.add(key)
-                lines.append((line, page.page))
+                lines.append(line)
 
     return lines
 
@@ -359,3 +401,67 @@ def _rows_to_text(rows: List[List[Optional[str]]]) -> str:
 
 def _row_to_text(row: List[Optional[str]]) -> str:
     return " ".join(cell for cell in row if cell).strip()
+
+
+def _active_column_indices(row: List[Optional[str]]) -> List[int]:
+    return [index for index, cell in enumerate(row) if cell is not None and str(cell).strip()]
+
+
+def _make_table_span(
+    *,
+    page: int,
+    table_id: str,
+    row: List[Optional[str]],
+    kind: str,
+    row_index: Optional[int] = None,
+) -> SourceSpan:
+    row_text = _row_to_text(row)
+    return SourceSpan(
+        page=page,
+        start=0,
+        end=0,
+        snippet=row_text or None,
+        structured_ref=StructuredRef(
+            kind=kind,  # type: ignore[arg-type]
+            table_id=table_id,
+            row_index=row_index,
+            column_indices=_active_column_indices(row),
+        ),
+    )
+
+
+def _iter_page_text_lines(page: StructuredPage) -> List[StructuredLine]:
+    lines: List[StructuredLine] = []
+    full_text = page.text or ""
+    cursor = 0
+
+    for line_index, raw_line in enumerate(full_text.splitlines()):
+        stripped = raw_line.strip()
+        if not stripped:
+            cursor += len(raw_line) + 1
+            continue
+
+        leading_spaces = len(raw_line) - len(raw_line.lstrip())
+        start = cursor + leading_spaces
+        end = start + len(stripped)
+        cursor += len(raw_line) + 1
+
+        lines.append(
+            StructuredLine(
+                text=stripped,
+                page=page.page,
+                source_span=SourceSpan(
+                    page=page.page,
+                    start=max(0, start),
+                    end=max(start, end),
+                    snippet=stripped,
+                    structured_ref=StructuredRef(
+                        kind="page_text",
+                        line_index=line_index,
+                        column_indices=[],
+                    ),
+                ),
+            )
+        )
+
+    return lines

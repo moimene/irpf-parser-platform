@@ -60,12 +60,15 @@ La capa de revision manual ya no es solo una cola:
 - `GET /api/review/:extraction_id` devuelve records y `structured_document` normalizados para edicion.
 - `PATCH /api/review/:extraction_id` soporta guardar borrador (`request_correction`) o aprobar/rechazar persistiendo correcciones sobre `normalized_payload.records`.
 - `apps/web/components/review-board.tsx` renderiza seleccion de documento, editor por registro/campo y visor lateral del `structured_document`.
+- `SourceSpan` ya soporta `structured_ref` para anclar un registro a:
+  - `table_row` (`table_id`, `row_index`, `column_indices`),
+  - `table_header`,
+  - o `page_text` (`line_index`).
 
 Limitacion vigente de esta capa:
 
-- la UI ya es operativa para editar,
-- pero la procedencia sigue anclada a `source_spans` con `page/start/end/snippet`,
-- no a celdas o bounding boxes estables del backend documental.
+- la UI ya es operativa para editar y resaltar filas/líneas estables,
+- pero la procedencia todavia no llega a nivel de celda individual ni `bbox` geometrico del backend documental.
 
 La trazabilidad de perdidas bloqueadas ya forma parte del runtime operativo:
 

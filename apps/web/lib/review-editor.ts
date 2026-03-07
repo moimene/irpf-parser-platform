@@ -1,4 +1,4 @@
-import type { ParsedRecord, SourceSpan, StructuredDocument, StructuredPage } from "@/lib/contracts";
+import type { ParsedRecord, SourceSpan, StructuredDocument, StructuredPage, StructuredRef } from "@/lib/contracts";
 
 type JsonObject = Record<string, unknown>;
 type ParsedFieldValue = ParsedRecord["fields"][string];
@@ -71,6 +71,31 @@ function normalizeFields(value: unknown): Record<string, ParsedFieldValue> {
   return fields;
 }
 
+function normalizeStructuredRef(value: unknown): StructuredRef | null {
+  if (!isObject(value) || typeof value.kind !== "string") {
+    return null;
+  }
+
+  if (!["page_text", "table_header", "table_row"].includes(value.kind)) {
+    return null;
+  }
+
+  const columnIndices = Array.isArray(value.column_indices)
+    ? value.column_indices.flatMap((item) => {
+        const parsed = toNullableNumber(item);
+        return parsed === null ? [] : [parsed];
+      })
+    : [];
+
+  return {
+    kind: value.kind as StructuredRef["kind"],
+    table_id: typeof value.table_id === "string" ? value.table_id : null,
+    row_index: toNullableNumber(value.row_index),
+    line_index: toNullableNumber(value.line_index),
+    column_indices: columnIndices
+  };
+}
+
 export function normalizeSourceSpans(value: unknown): SourceSpan[] {
   if (!Array.isArray(value)) {
     return [];
@@ -94,7 +119,8 @@ export function normalizeSourceSpans(value: unknown): SourceSpan[] {
         page,
         start,
         end,
-        snippet: typeof item.snippet === "string" ? item.snippet : undefined
+        snippet: typeof item.snippet === "string" ? item.snippet : undefined,
+        structured_ref: normalizeStructuredRef(item.structured_ref)
       }
     ];
   });
@@ -317,8 +343,33 @@ export function collectRelevantStructuredPages(
 
 export function doesStructuredRowMatchRecord(
   row: Array<string | null>,
-  record: ParsedRecord
+  record: ParsedRecord,
+  options?: {
+    tableId?: string;
+    rowIndex?: number;
+  }
 ): boolean {
+  const exactStructuredMatch = record.source_spans.some((span) => {
+    const structuredRef = span.structured_ref;
+    if (!structuredRef || structuredRef.kind !== "table_row") {
+      return false;
+    }
+
+    if (options?.tableId && structuredRef.table_id !== options.tableId) {
+      return false;
+    }
+
+    if (typeof options?.rowIndex === "number" && structuredRef.row_index !== options.rowIndex) {
+      return false;
+    }
+
+    return true;
+  });
+
+  if (exactStructuredMatch) {
+    return true;
+  }
+
   const haystack = row
     .filter((cell): cell is string => typeof cell === "string" && cell.trim().length > 0)
     .join(" ")

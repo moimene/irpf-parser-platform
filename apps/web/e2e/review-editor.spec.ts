@@ -14,7 +14,21 @@ test.describe("review-editor helpers", () => {
       {
         record_type: "COMPRA",
         confidence: 0.83,
-        source_spans: [{ page: 1, start: 10, end: 40, snippet: "Compra editable" }],
+        source_spans: [
+          {
+            page: 1,
+            start: 0,
+            end: 0,
+            snippet: "Compra editable",
+            structured_ref: {
+              kind: "table_row",
+              table_id: "csv-1",
+              row_index: 0,
+              line_index: null,
+              column_indices: [0, 1, 2]
+            }
+          }
+        ],
         fields: {
           description: "Compra editable",
           amount: 1500,
@@ -31,6 +45,15 @@ test.describe("review-editor helpers", () => {
       record_index: 0,
       record_type: "COMPRA",
       confidence: 0.83,
+      source_spans: [
+        {
+          structured_ref: {
+            kind: "table_row",
+            table_id: "csv-1",
+            row_index: 0
+          }
+        }
+      ],
       fields: {
         description: "Compra editable",
         amount: 1500,
@@ -52,7 +75,21 @@ test.describe("review-editor helpers", () => {
     const record: ParsedRecord = {
       record_type: "COMPRA",
       confidence: 0.83,
-      source_spans: [{ page: 2, start: 0, end: 20, snippet: "Compra editable ES0000000001" }],
+      source_spans: [
+        {
+          page: 2,
+          start: 0,
+          end: 0,
+          snippet: "Compra editable ES0000000001",
+          structured_ref: {
+            kind: "table_row",
+            table_id: "table-1",
+            row_index: 0,
+            line_index: null,
+            column_indices: [0, 1, 2]
+          }
+        }
+      ],
       fields: {
         description: "Compra editable",
         isin: "ES0000000001",
@@ -90,7 +127,11 @@ test.describe("review-editor helpers", () => {
     expect(
       doesStructuredRowMatchRecord(
         structuredDocument.pages[1].tables[0].rows[0],
-        record
+        record,
+        {
+          tableId: "table-1",
+          rowIndex: 0
+        }
       )
     ).toBeTruthy();
   });

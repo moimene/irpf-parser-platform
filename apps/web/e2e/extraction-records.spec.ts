@@ -16,7 +16,21 @@ test.describe("Normalizacion de extracciones", () => {
             quantity: 5
           },
           confidence: 0.72,
-          source_spans: [{ page: 1, start: 10, end: 40, snippet: "Venta original" }]
+          source_spans: [
+            {
+              page: 1,
+              start: 10,
+              end: 40,
+              snippet: "Venta original",
+              structured_ref: {
+                kind: "table_row",
+                table_id: "csv-1",
+                row_index: 0,
+                line_index: null,
+                column_indices: [0, 1, 2]
+              }
+            }
+          ]
         },
         {
           record_type: "DIVIDENDO",
@@ -61,7 +75,16 @@ test.describe("Normalizacion de extracciones", () => {
           quantity: 4.5,
           realized_gain: 120
         },
-        confidence: 0.95
+        confidence: 0.95,
+        source_spans: [
+          {
+            structured_ref: {
+              kind: "table_row",
+              table_id: "csv-1",
+              row_index: 0
+            }
+          }
+        ]
       },
       {
         record_type: "DIVIDENDO",

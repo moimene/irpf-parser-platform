@@ -5,11 +5,20 @@ DocumentSourceType = Literal["PDF", "IMAGE", "CSV", "XLSX", "DOCX"]
 StructuredBackend = Literal["pdfplumber", "csv", "xlsx", "text", "docling", "unknown"]
 
 
+class StructuredRef(BaseModel):
+    kind: Literal["page_text", "table_header", "table_row"]
+    table_id: Optional[str] = None
+    row_index: Optional[int] = None
+    line_index: Optional[int] = None
+    column_indices: List[int] = Field(default_factory=list)
+
+
 class SourceSpan(BaseModel):
     page: int
     start: int
     end: int
     snippet: Optional[str] = None
+    structured_ref: Optional[StructuredRef] = None
 
 
 class ParsedRecord(BaseModel):

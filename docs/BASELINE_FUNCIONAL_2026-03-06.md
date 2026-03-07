@@ -89,7 +89,7 @@ La suite E2E cubre:
 | Subida segura a storage | Implementado | `apps/web/app/api/documents/upload-urls/route.ts` | Operativa valida con signed URLs. |
 | Parser por entidad | Parcial | `services/parser/app/parser_engine.py` | Cobertura real: `Pictet`, `Goldman Sachs`, `Citi`. |
 | OCR / imagen / Excel | No completo | `services/parser/app/parser_engine.py` | Runtime real sigue centrado en PDF/texto. |
-| Revision manual | Implementado parcial | `apps/web/app/api/review/[extraction_id]/route.ts`, `apps/web/components/review-board.tsx` | Existe ya edicion real por record/campo y visor de `structured_document`; sigue faltando trazabilidad estable por celda/bbox. |
+| Revision manual | Implementado parcial | `apps/web/app/api/review/[extraction_id]/route.ts`, `apps/web/components/review-board.tsx`, `services/parser/app/parser_engine.py` | Existe ya edicion real por record/campo y provenance estable por pagina/tabla/fila/línea; siguen faltando referencias por celda y `bbox`. |
 | Expediente operativo | Implementado | `apps/web/app/api/expedientes/[id]/route.ts` | Estado, cliente, documentos, exportes. |
 | Dashboard operativo | Implementado | `apps/web/app/api/dashboard/route.ts` | Metricas base de operacion. |
 | Motor fiscal IRPF | Parcial avanzada | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts`, `apps/web/lib/fiscal-adjustments.ts` | Runtime fiscal con lotes, asignaciones FIFO, pérdidas bloqueadas y ajustes manuales persistidos; falta cierre de dominio completo y modulos fiscales posteriores. |
@@ -178,7 +178,7 @@ Ya construido en esta primera slice:
 Siguiente foco del track:
 
 - Cierre fiscal explicable sobre el runtime ya persistido.
-- Trazabilidad estable al origen estructurado para que la revision no dependa de snippets por substring.
+- Provenance mas rico por celda y `bbox` sobre el origen estructurado.
 - Patrimonio/IP y AEAT completa como siguientes modulos de dominio.
 
 ### Track 2b. Endurecimiento parser y review
@@ -188,7 +188,8 @@ Siguiente foco del track:
 - `PDF/DOCX/IMAGE` con capa estructurada candidata en `Docling`.
 - LLM solo para mapping semantico a schema cerrado.
 - Review ya editable por record/campo sobre `structured_document`.
-- Siguiente hueco: provenance estable por pagina/tabla/fila/celda o bbox.
+- Review ya usa provenance estable por pagina/tabla/fila/línea.
+- Siguiente hueco: referencias por celda individual y `bbox`.
 
 ### Track 3. Patrimonio e IP
 
@@ -326,7 +327,7 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
   - y panel lateral con paginas, tablas y snippets del `structured_document`.
 - La deuda cambia de sitio:
   - la edicion real ya existe,
-  - pero `source_spans` siguen siendo `page/start/end/snippet` y no referencias estables a celda o bbox.
+  - pero `source_spans` seguian siendo `page/start/end/snippet` y no referencias estables a celda o bbox.
 - Cobertura añadida:
   - `apps/web/e2e/review-editor.spec.ts`
   - ampliacion de `apps/web/e2e/critical-flows.spec.ts` para editar y aprobar una compra CSV de baja confianza.
@@ -337,6 +338,32 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
   - `cd apps/web && npx playwright test e2e/review-editor.spec.ts` -> `3 passed`
   - `cd apps/web && npx playwright test` -> `13 passed, 6 skipped`
 - Esta slice queda cerrada en codigo y documentacion; falta merge/deploy si se quiere alinear produccion con este estado.
+
+## Actualizacion 2026-03-08 provenance estructurado en review
+
+- `services/parser/app/schemas.py` y `apps/web/lib/contracts.ts` amplian `SourceSpan` con `structured_ref` para representar origen `page_text`, `table_header` y `table_row`.
+- `services/parser/app/structured_document.py` genera ya `StructuredLine` con provenance estable para:
+  - filas tabulares (`table_id`, `row_index`, `column_indices`),
+  - cabeceras,
+  - y lineas de texto (`line_index`) dentro de cada pagina.
+- `services/parser/app/parser_engine.py` preserva ese `source_span` al construir `ParsedRecord`, evitando caer siempre al substring de `full_text`.
+- `apps/web/lib/review-editor.ts` y `apps/web/lib/extraction-records.ts` normalizan y conservan `structured_ref` durante edicion, guardado de borrador y aprobacion.
+- `apps/web/components/review-board.tsx` usa ya esa referencia estructurada para resaltar filas exactas y lineas exactas en el panel lateral de `structured_document`.
+- El gap actual cambia:
+  - ya existe provenance estable por pagina/tabla/fila/línea,
+  - pero no hay todavia referencia por celda individual ni `bbox` geometrico.
+- Cobertura añadida:
+  - `services/parser/tests/test_parser_engine.py`
+  - `apps/web/e2e/review-editor.spec.ts`
+  - `apps/web/e2e/extraction-records.spec.ts`
+  - ampliacion de `apps/web/e2e/critical-flows.spec.ts`
+- Verificacion ejecutada:
+  - `cd services/parser && uv run pytest tests/test_parser_engine.py` -> `4 passed`
+  - `npm run typecheck --workspace apps/web`
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd apps/web && npx playwright test e2e/review-editor.spec.ts e2e/extraction-records.spec.ts` -> `5 passed`
+  - `cd apps/web && npx playwright test` -> `13 passed, 6 skipped`
 
 ## Decision de gobierno
 

@@ -736,6 +736,7 @@ test.describe("Ciclo critico IRPF", () => {
     await expect(page.getByRole("heading", { name: filename })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Documento estructurado" })).toBeVisible();
     await expect(page.getByText(`Compra editable ${runId}`)).toBeVisible();
+    await expect(page.getByText("tabla csv-1 · fila 1")).toBeVisible();
 
     await page.getByLabel("Descripción").fill(`Compra corregida ${runId}`);
     await page.getByLabel("Importe").fill("1750.5");

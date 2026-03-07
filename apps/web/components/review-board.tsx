@@ -212,6 +212,55 @@ function getSpanSnippet(span: SourceSpan, page: StructuredPage | undefined): str
   return excerpt || page.text.slice(0, 140).trim() || "Sin snippet";
 }
 
+function getStructuredSpanLabel(span: SourceSpan): string | null {
+  const structuredRef = span.structured_ref;
+  if (!structuredRef) {
+    return null;
+  }
+
+  if (structuredRef.kind === "table_row") {
+    const rowLabel =
+      typeof structuredRef.row_index === "number" ? `fila ${structuredRef.row_index + 1}` : "fila";
+    const tableLabel = structuredRef.table_id ? `tabla ${structuredRef.table_id}` : "tabla";
+    return `${tableLabel} · ${rowLabel}`;
+  }
+
+  if (structuredRef.kind === "table_header") {
+    return structuredRef.table_id ? `cabecera ${structuredRef.table_id}` : "cabecera de tabla";
+  }
+
+  if (typeof structuredRef.line_index === "number") {
+    return `línea ${structuredRef.line_index + 1}`;
+  }
+
+  return "texto de página";
+}
+
+function getStructuredColumnsLabel(span: SourceSpan): string | null {
+  const columns = span.structured_ref?.column_indices ?? [];
+  if (columns.length === 0) {
+    return null;
+  }
+
+  return `columnas ${columns.map((column) => column + 1).join(", ")}`;
+}
+
+function getReferencedLineIndexes(record: ParsedRecord | null, pageNumber: number): Set<number> {
+  const indexes = new Set<number>();
+
+  for (const span of record?.source_spans ?? []) {
+    if (span.page !== pageNumber || span.structured_ref?.kind !== "page_text") {
+      continue;
+    }
+
+    if (typeof span.structured_ref.line_index === "number") {
+      indexes.add(span.structured_ref.line_index);
+    }
+  }
+
+  return indexes;
+}
+
 export function ReviewBoard() {
   const [payload, setPayload] = useState<ReviewQueuePayload>(initialPayload);
   const [selectedExtractionId, setSelectedExtractionId] = useState<string | null>(null);
@@ -687,13 +736,21 @@ export function ReviewBoard() {
                     <div className="review-span-list">
                       {selectedRecord.source_spans.map((span, index) => {
                         const page = detail.structured_document?.pages.find((item) => item.page === span.page);
+                        const structuredLabel = getStructuredSpanLabel(span);
+                        const columnsLabel = getStructuredColumnsLabel(span);
                         return (
                           <div key={`${span.page}-${span.start}-${index}`} className="review-span-card">
-                            <span className="badge info">Página {span.page}</span>
+                            <div className="review-span-card-meta">
+                              <span className="badge info">Página {span.page}</span>
+                              {structuredLabel ? <span className="badge success">{structuredLabel}</span> : null}
+                              {columnsLabel ? <span className="badge info">{columnsLabel}</span> : null}
+                            </div>
                             <p>{getSpanSnippet(span, page)}</p>
-                            <span className="muted">
-                              offsets {span.start}-{span.end}
-                            </span>
+                            {span.structured_ref?.kind === "page_text" ? (
+                              <span className="muted">offsets {span.start}-{span.end}</span>
+                            ) : (
+                              <span className="muted">referencia estructurada persistente</span>
+                            )}
                           </div>
                         );
                       })}
@@ -704,7 +761,9 @@ export function ReviewBoard() {
 
                   {detail.structured_document ? (
                     <div className="review-page-list">
-                      {structuredPages.map((page) => (
+                      {structuredPages.map((page) => {
+                        const referencedLineIndexes = getReferencedLineIndexes(selectedRecord, page.page);
+                        return (
                         <article key={page.page} className="review-page-card">
                           <div className="review-page-card-header">
                             <strong>Página {page.page}</strong>
@@ -732,7 +791,10 @@ export function ReviewBoard() {
                                     <tbody>
                                       {table.rows.map((row, rowIndex) => {
                                         const matches = selectedRecord
-                                          ? doesStructuredRowMatchRecord(row, selectedRecord)
+                                          ? doesStructuredRowMatchRecord(row, selectedRecord, {
+                                              tableId: table.table_id,
+                                              rowIndex
+                                            })
                                           : false;
 
                                         return (
@@ -760,11 +822,27 @@ export function ReviewBoard() {
                           {page.text ? (
                             <details className="review-page-text">
                               <summary>Texto detectado</summary>
-                              <pre>{page.text}</pre>
+                              <div className="review-page-text-lines">
+                                {page.text.split(/\r?\n/).map((line, lineIndex) => {
+                                  const trimmed = line.trim();
+                                  const isMatch = referencedLineIndexes.has(lineIndex);
+                                  return (
+                                    <div
+                                      key={`${page.page}-line-${lineIndex}`}
+                                      className={`review-page-text-line${isMatch ? " is-match" : ""}`}
+                                    >
+                                      <span className="review-page-text-line-number">{lineIndex + 1}</span>
+                                      <span className="review-page-text-line-content">
+                                        {trimmed || "\u00a0"}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </details>
                           ) : null}
                         </article>
-                      ))}
+                      )})}
                     </div>
                   ) : (
                     <p className="muted">Esta extracción no trae `structured_document` todavía.</p>

@@ -15,6 +15,14 @@ export type WorkflowEventType =
 
 export type DocumentSourceType = "PDF" | "IMAGE" | "CSV" | "XLSX" | "DOCX";
 
+export interface StructuredRef {
+  kind: "page_text" | "table_header" | "table_row";
+  table_id?: string | null;
+  row_index?: number | null;
+  line_index?: number | null;
+  column_indices: number[];
+}
+
 export interface IntakeDocumentInput {
   filename: string;
   storage_path?: string;
@@ -46,6 +54,7 @@ export interface SourceSpan {
   start: number;
   end: number;
   snippet?: string;
+  structured_ref?: StructuredRef | null;
 }
 
 export interface ParsedRecord {
