@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient, getAbogadoActual } from "@/lib/supabase-auth";
+import { createSupabaseServerClient, getAbogadoActual } from "@/lib/supabase-auth-legacy-server";
 
 export const dynamic = "force-dynamic";
 

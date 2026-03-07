@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase-auth";
+import { createSupabaseServerClient } from "@/lib/supabase-auth-legacy-server";
 
 /**
  * Callback de Supabase Auth.

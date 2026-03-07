@@ -48,9 +48,10 @@ type ExpedienteContextResponse = {
 
 interface IntakeFormProps {
   expedienteId: string;
+  onSuccess?: () => void;
 }
 
-export function IntakeForm({ expedienteId }: IntakeFormProps) {
+export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
   const maxFileBytes = 15 * 1024 * 1024;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -298,6 +299,7 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      onSuccess?.();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "No se pudo ejecutar la ingesta");
     } finally {
@@ -386,6 +388,7 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
           <option value="PICTET">Pictet</option>
           <option value="GOLDMAN_SACHS">Goldman Sachs</option>
           <option value="CITI">Citi</option>
+          <option value="JPMORGAN">J.P. Morgan</option>
         </select>
 
         <button type="submit" disabled={submitDisabled}>
