@@ -143,7 +143,7 @@ export function buildOperationsFromRecords(input: {
       const currency = normalizeCurrency(readString(fields, "currency"));
       const quantity = readNumber(fields, "quantity");
       const retention = readNumber(fields, "retention");
-      const realizedGain = readNumber(fields, "realized_gain") ?? (operationType === "VENTA" ? amount : null);
+      const realizedGain = readNumber(fields, "realized_gain");
 
       return {
         id: crypto.randomUUID(),
@@ -214,8 +214,7 @@ export function toAeatRecord(row: PersistedOperationRow): AeatRecord {
   const retention = coerceNumber(row.retention) ?? readNumber(fields, "retention");
   const realizedGain =
     coerceNumber(row.realized_gain) ??
-    readNumber(fields, "realized_gain") ??
-    (row.operation_type === "VENTA" ? amount : null);
+    readNumber(fields, "realized_gain");
 
   return {
     isin: row.isin ?? readString(fields, "isin"),

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
 import { dbTables } from "@/lib/db-tables";
+import { applyCorrectedFieldsToRecords } from "@/lib/extraction-records";
 import { buildOperationsFromRecords, replaceDocumentOperations } from "@/lib/operations";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
@@ -70,9 +71,14 @@ export async function PATCH(
 
     let updatedPayload = extraction.normalized_payload as Record<string, unknown>;
     if (action === "approve" && corrected_fields && Object.keys(corrected_fields).length > 0) {
+      const currentRecords = Array.isArray(updatedPayload.records)
+        ? (updatedPayload.records as Array<Record<string, unknown>>)
+        : [];
+      const correctedRecords = applyCorrectedFieldsToRecords(currentRecords, corrected_fields);
+
       updatedPayload = {
         ...updatedPayload,
-        records: updatedPayload.records,
+        records: correctedRecords,
         corrections: corrected_fields,
         corrected_by: reviewer,
         corrected_at: new Date().toISOString()

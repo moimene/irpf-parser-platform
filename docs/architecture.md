@@ -20,6 +20,11 @@
 - `POST /parse-document`
 - Estrategia: plantilla conocida -> fallback semántico -> revisión manual
 - Soporte inicial entidades: Pictet, Goldman Sachs, Citi
+- Endurecimiento siguiente ya decidido:
+  - `XLSX` y `CSV` deben entrar por parser determinista, no por OCR/LLM.
+  - `PDF`, `DOCX` e imagen deben pasar por una capa `structured_document` antes del mapping fiscal.
+  - `Docling` es candidato para esa capa documental por OCR, tablas y representación estructurada, pero no como motor fiscal ni como fuente directa de exportación AEAT.
+  - El LLM debe quedar restringido a clasificación semántica y mapping de columnas/campos dentro de un schema cerrado.
 
 ## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`)
 
@@ -42,6 +47,7 @@ La arquitectura actual consolida el flujo critico de expediente y documentos, pe
 
 - SSO corporativo,
 - ajustes manuales de coste/herencia/transferencia y trazabilidad de bloqueo de perdidas,
+- editor de revisión con trazabilidad por celda/caja estable sobre el documento fuente,
 - patrimonio y no cotizadas,
 - configuracion de plantillas y reglas como modulo de negocio.
 

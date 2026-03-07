@@ -88,7 +88,7 @@ La suite E2E cubre:
 | Subida segura a storage | Implementado | `apps/web/app/api/documents/upload-urls/route.ts` | Operativa valida con signed URLs. |
 | Parser por entidad | Parcial | `services/parser/app/parser_engine.py` | Cobertura real: `Pictet`, `Goldman Sachs`, `Citi`. |
 | OCR / imagen / Excel | No completo | `services/parser/app/parser_engine.py` | Runtime real sigue centrado en PDF/texto. |
-| Revision manual | Implementado | `apps/web/app/api/review/[extraction_id]/route.ts` | Aprobacion o rechazo funcional. |
+| Revision manual | Implementado parcial | `apps/web/app/api/review/[extraction_id]/route.ts` | Aprobacion o rechazo funcional; la correccion ya parchea records aprobados, pero falta UI de edicion lado a lado. |
 | Expediente operativo | Implementado | `apps/web/app/api/expedientes/[id]/route.ts` | Estado, cliente, documentos, exportes. |
 | Dashboard operativo | Implementado | `apps/web/app/api/dashboard/route.ts` | Metricas base de operacion. |
 | Motor fiscal IRPF | Parcial | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts` | Runtime fiscal con lotes y asignaciones FIFO persistidas; faltan ajustes manuales y cierre de dominio completo. |
@@ -134,6 +134,7 @@ Esto permite operar en produccion hoy, pero no debe considerarse arquitectura ob
 4. `714` y `720` existen como exportadores base, no como solucion fiscal cerrada.
 5. El parser no debe venderse como OCR generalista ni como cobertura abierta de entidades.
 6. `Configuracion` es ya un modulo vivo, pero no cubre todavia plantillas, catalogos, reglas ni gobierno funcional completo.
+7. `Docling` encaja como capa futura de `document-understanding`, no como modelo fiscal ni como reemplazo de reglas/exports deterministas.
 
 ## Principios para construir a partir de esta base
 
@@ -179,6 +180,14 @@ Siguiente foco del track:
 - Bloqueos de perdidas con trazabilidad operativa.
 - Vistas de ganancias/perdidas y cierre fiscal explicable.
 
+### Track 2b. Endurecimiento parser y review
+
+- Separar `structured_document` de `canonical_records`.
+- `XLSX/CSV` por parseo determinista.
+- `PDF/DOCX/IMAGE` con capa estructurada candidata en `Docling`.
+- LLM solo para mapping semantico a schema cerrado.
+- Review con edicion efectiva por record/campo y trazabilidad estable al origen.
+
 ### Track 3. Patrimonio e IP
 
 - Cuentas, posiciones y valoracion a cierre.
@@ -217,6 +226,18 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
 2. UI utilizable por fiscalista, no solo endpoint.
 3. E2E o integracion que cubra el flujo principal.
 4. Documentacion actualizada en esta baseline y en la trazabilidad PRD.
+
+## Actualizacion 2026-03-07 hardening review y contrato de operaciones
+
+- `corrected_fields` ya no es solo metadata: al aprobar una extraccion se aplica sobre `normalized_payload.records` antes de reconstruir `irpf_operations`.
+- Las ventas sin `realized_gain` informado dejan de persistirse con una ganancia inventada igual al importe de venta.
+- La cobertura tecnica añade `apps/web/e2e/extraction-records.spec.ts` para blindar ambos contratos.
+- Validacion ejecutada:
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `npm run typecheck --workspace apps/web`
+  - `cd apps/web && set -a && source .env.local && set +a && npx playwright test` -> `9 passed`
+- Despliegue a produccion actualizado el 2026-03-07: `https://web-tan-mu-35.vercel.app` desde `https://web-44c1ii0cb-moises-menendezs-projects.vercel.app`
 
 ## Decision de gobierno
 
