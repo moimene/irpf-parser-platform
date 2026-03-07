@@ -1,5 +1,6 @@
 import base64
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 
@@ -100,6 +101,68 @@ def test_xlsx_builds_structured_document_and_records() -> None:
     assert response.structured_document.source_type == "XLSX"
     assert response.structured_document.backend == "xlsx"
     assert response.structured_document.pages[0].tables
+    assert response.asset_records
+    assert response.fiscal_events
+    assert response.fiscal_events[0]["capital_operation_key"] == "DIVIDENDO_ACCION"
+
+
+def test_legacy_xls_builds_structured_document_and_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSheet:
+        name = "Dividendos"
+        nrows = 2
+        ncols = 5
+
+        _rows = [
+            ["Date", "Description", "ISIN", "Amount", "Currency"],
+            ["2025-01-15", "Dividend payment", "US0378331005", 123.45, "USD"],
+        ]
+
+        def cell(self, row_index: int, column_index: int) -> SimpleNamespace:
+            return SimpleNamespace(ctype=1, value=self._rows[row_index][column_index])
+
+    class FakeWorkbook:
+        datemode = 0
+        nsheets = 1
+
+        def __init__(self) -> None:
+            self._sheet = FakeSheet()
+
+        def sheet_by_index(self, index: int) -> FakeSheet:
+            assert index == 0
+            return self._sheet
+
+        def sheet_names(self) -> list[str]:
+            return [self._sheet.name]
+
+        def release_resources(self) -> None:
+            return None
+
+    fake_xlrd = SimpleNamespace(
+        XL_CELL_DATE=3,
+        XL_CELL_NUMBER=2,
+        open_workbook=lambda **_: FakeWorkbook(),
+        xldate_as_datetime=lambda value, datemode: value,
+    )
+    monkeypatch.setitem(__import__("sys").modules, "xlrd", fake_xlrd)
+
+    legacy_xls_payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy-xls"
+    response = parse_document(
+        ParseDocumentRequest(
+            document_id="doc-xls",
+            expediente_id="exp-1",
+            filename="modelo720-2016.xls",
+            source_type="XLSX",
+            content_base64=base64.b64encode(legacy_xls_payload).decode("utf-8"),
+        )
+    )
+
+    assert response.parser_strategy == "template"
+    assert response.records
+    assert response.structured_document is not None
+    assert response.structured_document.source_type == "XLSX"
+    assert response.structured_document.backend == "xlsx"
+    assert response.structured_document.pages[0].tables
+    assert response.structured_document.metadata.get("legacy_format") is True
     assert response.asset_records
     assert response.fiscal_events
     assert response.fiscal_events[0]["capital_operation_key"] == "DIVIDENDO_ACCION"

@@ -6,6 +6,8 @@ from typing import List, Optional, Tuple
 from app.extractors.base import extract_text_from_pdf
 from app.schemas import ParseDocumentRequest, StructuredDocument, StructuredPage, StructuredTable
 
+LEGACY_XLS_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
 
 def decode_content_bytes(content_base64: Optional[str]) -> Optional[bytes]:
     if not content_base64:
@@ -60,7 +62,7 @@ def build_structured_document(
         return structured_document, content_bytes, warnings
 
     if source_type == "XLSX":
-        structured_document, xlsx_warnings = _build_xlsx_document(content_bytes)
+        structured_document, xlsx_warnings = _build_xlsx_document(content_bytes, request.filename)
         warnings.extend(xlsx_warnings)
         return structured_document, content_bytes, warnings
 
@@ -171,19 +173,22 @@ def _build_csv_document(
     )
 
 
-def _build_xlsx_document(content_bytes: Optional[bytes]) -> Tuple[StructuredDocument, List[str]]:
+def _build_xlsx_document(content_bytes: Optional[bytes], filename: str) -> Tuple[StructuredDocument, List[str]]:
     warnings: List[str] = []
     if not content_bytes:
-        warnings.append("Libro XLSX recibido sin contenido binario.")
+        warnings.append("Libro Excel recibido sin contenido binario.")
         return (
             StructuredDocument(source_type="XLSX", backend="xlsx", pages=[], metadata={"page_count": 0}),
             warnings,
         )
 
+    if _looks_like_legacy_xls(content_bytes, filename):
+        return _build_legacy_xls_document(content_bytes)
+
     try:
         from openpyxl import load_workbook
     except ImportError:
-        warnings.append("Dependencia openpyxl no disponible; no se puede estructurar XLSX.")
+        warnings.append("Dependencia openpyxl no disponible; no se puede estructurar Excel OOXML.")
         return (
             StructuredDocument(source_type="XLSX", backend="unknown", pages=[], metadata={"page_count": 0}),
             warnings,
@@ -226,6 +231,68 @@ def _build_xlsx_document(content_bytes: Optional[bytes]) -> Tuple[StructuredDocu
                 "page_count": len(pages),
                 "sheet_count": len(workbook.sheetnames),
                 "sheet_names": ", ".join(workbook.sheetnames),
+            },
+        ),
+        warnings,
+    )
+
+
+def _build_legacy_xls_document(content_bytes: bytes) -> Tuple[StructuredDocument, List[str]]:
+    warnings: List[str] = ["Libro Excel legado (.xls) procesado vía xlrd."]
+
+    try:
+        import xlrd
+    except ImportError:
+        warnings.append("Dependencia xlrd no disponible; no se puede estructurar XLS legado.")
+        return (
+            StructuredDocument(source_type="XLSX", backend="unknown", pages=[], metadata={"page_count": 0}),
+            warnings,
+        )
+
+    workbook = xlrd.open_workbook(file_contents=content_bytes, on_demand=True)
+    pages: List[StructuredPage] = []
+
+    try:
+        for index in range(workbook.nsheets):
+            worksheet = workbook.sheet_by_index(index)
+            rows: List[List[Optional[str]]] = []
+
+            for row_index in range(worksheet.nrows):
+                row = [
+                    _normalize_xlrd_cell(workbook, worksheet, row_index, column_index)
+                    for column_index in range(worksheet.ncols)
+                ]
+                if any(cell is not None for cell in row):
+                    rows.append(row)
+
+            header, body = _split_header_and_rows(rows)
+            table = StructuredTable(
+                table_id=f"xlsx-{index + 1}",
+                page=index + 1,
+                source=f"xls:{worksheet.name}",
+                header=header,
+                rows=body,
+            )
+            pages.append(
+                StructuredPage(
+                    page=index + 1,
+                    text=_rows_to_text(rows),
+                    tables=[table] if rows else [],
+                )
+            )
+    finally:
+        workbook.release_resources()
+
+    return (
+        StructuredDocument(
+            source_type="XLSX",
+            backend="xlsx",
+            pages=pages,
+            metadata={
+                "page_count": len(pages),
+                "sheet_count": workbook.nsheets,
+                "sheet_names": ", ".join(workbook.sheet_names()),
+                "legacy_format": True,
             },
         ),
         warnings,
@@ -339,6 +406,30 @@ def _normalize_cell(value: object) -> Optional[str]:
 
     text = str(value).strip()
     return text or None
+
+
+def _normalize_xlrd_cell(workbook: object, worksheet: object, row_index: int, column_index: int) -> Optional[str]:
+    import xlrd
+
+    cell = worksheet.cell(row_index, column_index)
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        value = xlrd.xldate_as_datetime(cell.value, workbook.datemode)
+        if value.time().isoformat() == "00:00:00":
+            return value.date().isoformat()
+        return value.isoformat(sep=" ", timespec="seconds")
+
+    if cell.ctype == xlrd.XL_CELL_NUMBER and float(cell.value).is_integer():
+        return str(int(cell.value))
+
+    return _normalize_cell(cell.value)
+
+
+def _looks_like_legacy_xls(content_bytes: bytes, filename: str) -> bool:
+    normalized_filename = filename.lower().strip()
+    if normalized_filename.endswith(".xls") and not normalized_filename.endswith(".xlsx"):
+        return True
+
+    return content_bytes.startswith(LEGACY_XLS_SIGNATURE)
 
 
 def _split_header_and_rows(rows: List[List[Optional[str]]]) -> Tuple[List[Optional[str]], List[List[Optional[str]]]]:

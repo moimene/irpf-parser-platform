@@ -29,6 +29,7 @@ app.add_middleware(
 def health() -> dict:
     has_pdfplumber = False
     has_openpyxl = False
+    has_xlrd = False
     try:
         import pdfplumber  # noqa: F401
         has_pdfplumber = True
@@ -37,6 +38,11 @@ def health() -> dict:
     try:
         import openpyxl  # noqa: F401
         has_openpyxl = True
+    except ImportError:
+        pass
+    try:
+        import xlrd  # noqa: F401
+        has_xlrd = True
     except ImportError:
         pass
     has_llm = bool(os.environ.get("OPENAI_API_KEY", "").strip())
@@ -49,6 +55,7 @@ def health() -> dict:
             "structured_document": True,
             "csv": True,
             "xlsx": has_openpyxl,
+            "xls": has_xlrd,
             "pypdf_fallback": True,
             "llm_fallback": has_llm,
             "entities": ["PICTET", "GOLDMAN_SACHS", "CITI"],

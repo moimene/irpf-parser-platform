@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir \
     pypdf>=5.0.0 \
     pdfplumber>=0.11.0 \
     openpyxl>=3.1.5 \
+    xlrd>=2.0.1 \
     httpx>=0.27.0 \
     openai>=1.51.0 \
     supabase>=2.7.4 \
