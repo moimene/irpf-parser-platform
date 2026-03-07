@@ -34,6 +34,14 @@ type ExpedientePayload = {
       review_status: string;
     } | null;
   }>;
+  operations?: Array<{
+    operation_type: string;
+    operation_date: string;
+    description: string | null;
+    amount: number | null;
+    quantity: number | null;
+    source: string;
+  }>;
   lots?: Array<{
     isin: string;
     quantity_original: number;
@@ -674,5 +682,106 @@ test.describe("Ciclo critico IRPF", () => {
     const download = await downloadPromise;
     expect(download.url()).toContain(`/api/exports/${expedienteRef}/download`);
     expect(download.suggestedFilename()).toContain("MODELO_100_");
+  });
+
+  test("review editable corrige registros sobre structured_document antes de aprobar", async ({ page }) => {
+    await ensureAuthenticated(page);
+    const runId = Date.now();
+    const expedienteRef = `pw-review-edit-${runId}`;
+    const filename = `pw_review_${runId}.csv`;
+    const createdClient = await createClient(page, `review-${runId}`);
+    await createExpediente(page, {
+      clientId: createdClient.id,
+      reference: expedienteRef,
+      fiscalYear: 2025,
+      modelType: "IRPF"
+    });
+
+    const csvPayload = [
+      "Action,Description,ISIN,Amount,Currency,Quantity,Date",
+      `Buy,Compra editable ${runId},ES0000000001,1500,EUR,10,2024-05-01`
+    ].join("\n");
+
+    const intakeResponse = await sessionJsonFetch<{ accepted: number; document_id?: string; error?: string }>(
+      page,
+      "/api/documents/intake",
+      {
+        method: "POST",
+        data: {
+          expediente_id: expedienteRef,
+          client_id: createdClient.id,
+          uploaded_by: "qa.playwright",
+          documents: [
+            {
+              filename,
+              source_type: "CSV",
+              content_base64: Buffer.from(csvPayload).toString("base64")
+            }
+          ]
+        }
+      }
+    );
+
+    const intakeBody = intakeResponse.body;
+    expect(intakeResponse.ok, JSON.stringify(intakeBody)).toBeTruthy();
+    expect(intakeBody.accepted).toBe(1);
+
+    await waitForDocumentInExpediente(page, expedienteRef, filename);
+    await waitForPendingReviewDocument(page, expedienteRef, filename, 1);
+
+    await page.goto("/review");
+    await expect(page.getByRole("heading", { name: "Bandeja de Revisión Manual" })).toBeVisible();
+
+    await page.getByRole("button", { name: new RegExp(filename) }).click();
+    await expect(page.getByRole("heading", { name: filename })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Documento estructurado" })).toBeVisible();
+    await expect(page.getByText(`Compra editable ${runId}`)).toBeVisible();
+
+    await page.getByLabel("Descripción").fill(`Compra corregida ${runId}`);
+    await page.getByLabel("Importe").fill("1750.5");
+    await page.getByLabel("Cantidad").fill("12");
+    await page.getByRole("button", { name: "Guardar borrador" }).click();
+    await expect(page.getByText("Borrador de correcciones guardado. Documento sigue en revisión.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Aprobar y persistir" }).click();
+    await expect(page.getByText(/Aprobado\./)).toBeVisible();
+
+    await expect
+      .poll(
+        async () => {
+          const expedienteResponse = await sessionJsonFetch<ExpedientePayload | { error?: string }>(
+            page,
+            `/api/expedientes/${expedienteRef}`
+          );
+
+          if (!expedienteResponse.ok) {
+            return null;
+          }
+
+          const expedienteBody = expedienteResponse.body as ExpedientePayload;
+          const document = expedienteBody.documents.find((item) => item.filename === filename);
+          const operation = expedienteBody.operations?.find(
+            (item) => item.description === `Compra corregida ${runId}`
+          );
+
+          if (!document || !operation) {
+            return null;
+          }
+
+          return {
+            processing_status: document.processing_status,
+            review_status: document.latest_extraction?.review_status ?? null,
+            amount: operation.amount,
+            quantity: operation.quantity
+          };
+        },
+        { timeout: 25_000 }
+      )
+      .toEqual({
+        processing_status: "completed",
+        review_status: "validated",
+        amount: 1750.5,
+        quantity: 12
+      });
   });
 });
