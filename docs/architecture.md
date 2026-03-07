@@ -30,9 +30,9 @@
   - `Docling` como candidato para `PDF/DOCX/IMAGE` en la capa documental por OCR, tablas y representación estructurada.
   - El LLM debe quedar restringido a clasificación semántica y mapping de columnas/campos dentro de un schema cerrado.
 
-## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`)
+## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`)
 
-- Tablas runtime: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_lots`, `irpf_sale_allocations`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
+- Tablas runtime: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_fiscal_adjustments`, `irpf_lots`, `irpf_sale_allocations`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
 - El esquema rico inicial de `0001_init.sql` existe como antecedente de diseño, pero no es la base operativa actual
 
 ## Capa n8n (`infra/n8n/workflows/irpf-parser-orchestration.json`)
@@ -50,7 +50,6 @@
 La arquitectura actual consolida el flujo critico de expediente y documentos, pero todavia no implementa de forma completa:
 
 - SSO corporativo,
-- ajustes manuales de coste/herencia/transferencia,
 - editor de revisión con trazabilidad por celda/caja estable sobre el documento fuente,
 - patrimonio y no cotizadas,
 - configuracion de plantillas y reglas como modulo de negocio.
@@ -61,5 +60,12 @@ La trazabilidad de perdidas bloqueadas ya forma parte del runtime operativo:
 - `GET /api/expedientes/:id` expone el detalle `venta -> compra bloqueante`,
 - `GET /api/exports/:expediente_id?model=100` incluye el detalle en la previsualizacion de validacion,
 - y la cola de `review` consume esas alertas a traves de `irpf_alerts`.
+
+Los ajustes manuales ya forman parte del runtime operativo:
+
+- `POST|GET /api/expedientes/:id/adjustments` y `PATCH|DELETE /api/expedientes/:id/adjustments/:adjustment_id` persisten correcciones de coste, herencias y transferencias.
+- `apps/web/lib/lots.ts` integra esos ajustes antes de recalcular lotes, asignaciones FIFO, perdidas bloqueadas e incidencias de runtime.
+- `GET /api/expedientes/:id` expone `adjustments`, `runtime_issues` y el efecto agregado en lotes y resumen fiscal.
+- `GET /api/exports/:expediente_id?model=100` y `/download` validan el modelo 100 contra ese runtime ya ajustado.
 
 La referencia de alcance consolidado es `docs/BASELINE_FUNCIONAL_2026-03-06.md`.

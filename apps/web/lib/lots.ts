@@ -1,6 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { detectBlockedLosses, type TradeEvent } from "@/lib/rules-core";
 import { dbTables } from "@/lib/db-tables";
+import {
+  normalizeUppercase,
+  readTargetSnapshot,
+  toNullableNumber,
+  type FiscalAdjustmentRow
+} from "@/lib/fiscal-adjustments";
 
 type JsonObject = Record<string, unknown>;
 
@@ -25,7 +31,7 @@ export type RuntimeOperationRow = {
 export type PersistedLot = {
   id: string;
   expediente_id: string;
-  acquisition_operation_id: string;
+  acquisition_operation_id: string | null;
   isin: string;
   description: string | null;
   acquisition_date: string;
@@ -45,7 +51,7 @@ export type PersistedSaleAllocation = {
   expediente_id: string;
   sale_operation_id: string;
   lot_id: string;
-  acquisition_operation_id: string;
+  acquisition_operation_id: string | null;
   isin: string;
   sale_date: string;
   acquisition_date: string;
@@ -141,8 +147,27 @@ type MutableLot = PersistedLot & {
       total_cost: number | null;
       realized_gain: number | null;
     }>;
+    transfers_out?: Array<{
+      adjustment_id: string;
+      operation_date: string;
+      quantity: number;
+      description: string | null;
+    }>;
+    acquisition_origin?: string;
+    adjustment_id?: string;
+    target_operation_id?: string | null;
   };
 };
+
+type RuntimeEvent =
+  | {
+      kind: "operation";
+      operation: RuntimeOperationRow;
+    }
+  | {
+      kind: "transfer_out";
+      adjustment: FiscalAdjustmentRow;
+    };
 
 function toNumber(value: number | string | null | undefined): number | null {
   if (typeof value === "number") {
@@ -217,6 +242,227 @@ function sumNumbers(values: Array<number | null>): number | null {
     numericValues.reduce((sum, value) => sum + value, 0),
     4
   );
+}
+
+function sortAdjustments(left: FiscalAdjustmentRow, right: FiscalAdjustmentRow): number {
+  const byDate = new Date(left.operation_date).getTime() - new Date(right.operation_date).getTime();
+  if (byDate !== 0) {
+    return byDate;
+  }
+
+  const leftCreated = left.created_at ? new Date(left.created_at).getTime() : 0;
+  const rightCreated = right.created_at ? new Date(right.created_at).getTime() : 0;
+  if (leftCreated !== rightCreated) {
+    return leftCreated - rightCreated;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function runtimeEventPriority(event: RuntimeEvent): number {
+  if (event.kind === "transfer_out") {
+    return 1;
+  }
+
+  return operationPriority(event.operation.operation_type) === 1 ? 2 : operationPriority(event.operation.operation_type);
+}
+
+function sortRuntimeEvents(left: RuntimeEvent, right: RuntimeEvent): number {
+  const leftDate =
+    left.kind === "transfer_out" ? left.adjustment.operation_date : left.operation.operation_date;
+  const rightDate =
+    right.kind === "transfer_out" ? right.adjustment.operation_date : right.operation.operation_date;
+  const byDate = new Date(leftDate).getTime() - new Date(rightDate).getTime();
+  if (byDate !== 0) {
+    return byDate;
+  }
+
+  const byPriority = runtimeEventPriority(left) - runtimeEventPriority(right);
+  if (byPriority !== 0) {
+    return byPriority;
+  }
+
+  const leftCreated =
+    left.kind === "transfer_out"
+      ? (left.adjustment.created_at ? new Date(left.adjustment.created_at).getTime() : 0)
+      : (left.operation.created_at ? new Date(left.operation.created_at).getTime() : 0);
+  const rightCreated =
+    right.kind === "transfer_out"
+      ? (right.adjustment.created_at ? new Date(right.adjustment.created_at).getTime() : 0)
+      : (right.operation.created_at ? new Date(right.operation.created_at).getTime() : 0);
+  if (leftCreated !== rightCreated) {
+    return leftCreated - rightCreated;
+  }
+
+  const leftId = left.kind === "transfer_out" ? left.adjustment.id : left.operation.id;
+  const rightId = right.kind === "transfer_out" ? right.adjustment.id : right.operation.id;
+  return leftId.localeCompare(rightId);
+}
+
+function buildAdjustmentIssue(
+  adjustment: FiscalAdjustmentRow,
+  code: string,
+  message: string,
+  quantity?: number | null
+): FiscalRuntimeIssue {
+  return {
+    code,
+    operation_id: adjustment.id,
+    isin: normalizeUppercase(adjustment.isin),
+    quantity,
+    message
+  };
+}
+
+function sameNullableNumber(left: number | null, right: number | null, tolerance = 0.000001): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  return Math.abs(left - right) <= tolerance;
+}
+
+function resolveCostBasisTargetOperation(
+  operations: RuntimeOperationRow[],
+  adjustment: FiscalAdjustmentRow
+): RuntimeOperationRow | null {
+  const directTarget = operations.find(
+    (operation) => operation.id === adjustment.target_operation_id && operation.operation_type === "COMPRA"
+  );
+
+  if (directTarget) {
+    return directTarget;
+  }
+
+  const snapshot = readTargetSnapshot(adjustment.metadata);
+  if (!snapshot) {
+    return null;
+  }
+
+  return (
+    operations.find((operation) => {
+      if (operation.operation_type !== "COMPRA") {
+        return false;
+      }
+
+      if (normalizeUppercase(operation.isin) !== normalizeUppercase(snapshot.isin)) {
+        return false;
+      }
+
+      if (operation.operation_date !== snapshot.operation_date) {
+        return false;
+      }
+
+      if (!sameNullableNumber(toNumber(operation.quantity), snapshot.quantity)) {
+        return false;
+      }
+
+      return true;
+    }) ?? null
+  );
+}
+
+function applyFiscalAdjustmentsToOperations(input: {
+  expedienteId: string;
+  operations: RuntimeOperationRow[];
+  adjustments: FiscalAdjustmentRow[];
+}): { operations: RuntimeOperationRow[]; transferOutAdjustments: FiscalAdjustmentRow[]; issues: FiscalRuntimeIssue[] } {
+  const activeAdjustments = [...input.adjustments]
+    .filter((adjustment) => adjustment.status === "ACTIVE")
+    .sort(sortAdjustments);
+  const issues: FiscalRuntimeIssue[] = [];
+  const operations = input.operations.map((operation) => ({ ...operation }));
+  const syntheticOperations: RuntimeOperationRow[] = [];
+  const transferOutAdjustments: FiscalAdjustmentRow[] = [];
+
+  for (const adjustment of activeAdjustments) {
+    if (adjustment.adjustment_type === "COST_BASIS") {
+      const target = resolveCostBasisTargetOperation(operations, adjustment);
+      if (!target) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "adjustment_target_not_found",
+            "El ajuste manual de coste no encontró una compra origen sobre la que aplicarse."
+          )
+        );
+        continue;
+      }
+
+      const resolvedQuantity = toNumber(adjustment.quantity) ?? toNumber(target.quantity);
+      if (resolvedQuantity === null || Math.abs(resolvedQuantity) <= 0) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "adjustment_invalid_quantity",
+            "El ajuste manual de coste requiere una cantidad válida mayor que cero."
+          )
+        );
+        continue;
+      }
+
+      target.operation_date = adjustment.operation_date;
+      target.isin = normalizeUppercase(adjustment.isin) ?? target.isin;
+      target.description = adjustment.description ?? target.description;
+      target.quantity = roundValue(Math.abs(resolvedQuantity), 6);
+      target.amount = toNullableNumber(adjustment.total_amount) ?? target.amount;
+      target.currency = normalizeCurrency(adjustment.currency ?? target.currency);
+      target.source = "MANUAL";
+      target.manual_notes = adjustment.notes ?? target.manual_notes;
+      continue;
+    }
+
+    if (adjustment.adjustment_type === "TRANSFER_OUT") {
+      transferOutAdjustments.push(adjustment);
+      continue;
+    }
+
+    const quantity = toNumber(adjustment.quantity);
+    if (quantity === null || Math.abs(quantity) <= 0) {
+      issues.push(
+        buildAdjustmentIssue(
+          adjustment,
+          "adjustment_invalid_quantity",
+          "El ajuste manual requiere una cantidad válida mayor que cero."
+        )
+      );
+      continue;
+    }
+
+    const isin = normalizeUppercase(adjustment.isin);
+    if (!isin) {
+      issues.push(
+        buildAdjustmentIssue(
+          adjustment,
+          "adjustment_missing_isin",
+          "El ajuste manual requiere ISIN para incorporarse al runtime fiscal."
+        )
+      );
+      continue;
+    }
+
+    syntheticOperations.push({
+      id: adjustment.id,
+      expediente_id: input.expedienteId,
+      operation_type: "COMPRA",
+      operation_date: adjustment.operation_date,
+      isin,
+      description: adjustment.description ?? adjustment.adjustment_type,
+      quantity: roundValue(Math.abs(quantity), 6),
+      amount: toNullableNumber(adjustment.total_amount),
+      currency: normalizeCurrency(adjustment.currency),
+      realized_gain: null,
+      source: "MANUAL",
+      manual_notes: adjustment.notes,
+      created_at: adjustment.created_at
+    });
+  }
+
+  return {
+    operations: [...operations, ...syntheticOperations].sort(sortOperations),
+    transferOutAdjustments: transferOutAdjustments.sort(sortAdjustments),
+    issues
+  };
 }
 
 export function summarizeSalesFromOperations(input: {
@@ -411,13 +657,93 @@ export function detectBlockedLossesFromFiscalRuntime(input: {
 export function deriveFiscalRuntimeFromOperations(input: {
   expedienteId: string;
   operations: RuntimeOperationRow[];
+  adjustments?: FiscalAdjustmentRow[];
 }): DerivedFiscalRuntime {
-  const sortedOperations = [...input.operations].sort(sortOperations);
+  const adjustedRuntime = applyFiscalAdjustmentsToOperations({
+    expedienteId: input.expedienteId,
+    operations: input.operations,
+    adjustments: input.adjustments ?? []
+  });
+  const sortedOperations = adjustedRuntime.operations;
   const lotsByIsin = new Map<string, MutableLot[]>();
   const allocations: PersistedSaleAllocation[] = [];
-  const issues: FiscalRuntimeIssue[] = [];
+  const issues: FiscalRuntimeIssue[] = [...adjustedRuntime.issues];
+  const runtimeEvents: RuntimeEvent[] = [
+    ...sortedOperations.map((operation) => ({ kind: "operation" as const, operation })),
+    ...adjustedRuntime.transferOutAdjustments.map((adjustment) => ({
+      kind: "transfer_out" as const,
+      adjustment
+    }))
+  ].sort(sortRuntimeEvents);
 
-  for (const operation of sortedOperations) {
+  for (const runtimeEvent of runtimeEvents) {
+    if (runtimeEvent.kind === "transfer_out") {
+      const adjustment = runtimeEvent.adjustment;
+      const isin = normalizeUppercase(adjustment.isin);
+      const quantity = Math.abs(toNumber(adjustment.quantity) ?? 0);
+
+      if (!isin) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "transfer_out_missing_isin",
+            "La transferencia de salida requiere ISIN para aplicarse al runtime fiscal."
+          )
+        );
+        continue;
+      }
+
+      if (quantity <= 0) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "transfer_out_invalid_quantity",
+            "La transferencia de salida requiere una cantidad válida mayor que cero."
+          )
+        );
+        continue;
+      }
+
+      const existingLots = lotsByIsin.get(isin) ?? [];
+      let remaining = quantity;
+
+      for (const lot of existingLots) {
+        if (remaining <= 0) {
+          break;
+        }
+
+        if (lot.quantity_open <= 0) {
+          continue;
+        }
+
+        const transferredQuantity = roundValue(Math.min(remaining, lot.quantity_open), 6);
+        lot.quantity_open = roundValue(lot.quantity_open - transferredQuantity, 6);
+        lot.quantity_sold = roundValue(lot.quantity_sold + transferredQuantity, 6);
+        lot.metadata.transfers_out = lot.metadata.transfers_out ?? [];
+        lot.metadata.transfers_out.push({
+          adjustment_id: adjustment.id,
+          operation_date: adjustment.operation_date,
+          quantity: transferredQuantity,
+          description: adjustment.description ?? adjustment.notes ?? null
+        });
+        remaining = roundValue(remaining - transferredQuantity, 6);
+      }
+
+      if (remaining > 0) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "transfer_out_without_available_lots",
+            `La transferencia de salida de ${isin} no tiene lotes suficientes para cubrir ${remaining} títulos.`,
+            remaining
+          )
+        );
+      }
+
+      continue;
+    }
+
+    const operation = runtimeEvent.operation;
     if (!operation.isin?.trim()) {
       if (operation.operation_type === "COMPRA" || operation.operation_type === "VENTA") {
         issues.push({
@@ -449,11 +775,15 @@ export function deriveFiscalRuntimeFromOperations(input: {
       const normalizedTotalCost = totalCost === null ? null : roundValue(totalCost, 4);
       const unitCost =
         normalizedTotalCost === null ? null : roundValue(normalizedTotalCost / quantity, 8);
+      const sourceAdjustment =
+        input.adjustments?.find((adjustment) => adjustment.id === operation.id) ?? null;
+      const acquisitionOperationId =
+        sourceAdjustment && sourceAdjustment.adjustment_type !== "COST_BASIS" ? null : operation.id;
 
       const lot: MutableLot = {
         id: crypto.randomUUID(),
         expediente_id: input.expedienteId,
-        acquisition_operation_id: operation.id,
+        acquisition_operation_id: acquisitionOperationId,
         isin,
         description: operation.description ?? operation.manual_notes ?? null,
         acquisition_date: operation.operation_date,
@@ -466,7 +796,10 @@ export function deriveFiscalRuntimeFromOperations(input: {
         status: "OPEN",
         source: operation.source,
         metadata: {
-          sales: []
+          sales: [],
+          acquisition_origin: sourceAdjustment?.adjustment_type,
+          adjustment_id: sourceAdjustment?.id,
+          target_operation_id: sourceAdjustment?.target_operation_id ?? null
         }
       };
 
@@ -614,6 +947,7 @@ export function deriveFiscalRuntimeFromOperations(input: {
 export function deriveLotsFromOperations(input: {
   expedienteId: string;
   operations: RuntimeOperationRow[];
+  adjustments?: FiscalAdjustmentRow[];
 }): { lots: PersistedLot[]; issues: FiscalRuntimeIssue[] } {
   const runtime = deriveFiscalRuntimeFromOperations(input);
   return {
@@ -626,22 +960,37 @@ export async function rebuildExpedienteFiscalRuntime(
   supabase: SupabaseClient,
   expedienteId: string
 ): Promise<void> {
-  const { data: operations, error: operationsError } = await supabase
-    .from(dbTables.operations)
-    .select(
-      "id, expediente_id, operation_type, operation_date, isin, description, quantity, amount, currency, realized_gain, source, manual_notes, created_at"
-    )
-    .eq("expediente_id", expedienteId)
-    .order("operation_date", { ascending: true })
-    .order("created_at", { ascending: true });
+  const [operationsResult, adjustmentsResult] = await Promise.all([
+    supabase
+      .from(dbTables.operations)
+      .select(
+        "id, expediente_id, operation_type, operation_date, isin, description, quantity, amount, currency, realized_gain, source, manual_notes, created_at"
+      )
+      .eq("expediente_id", expedienteId)
+      .order("operation_date", { ascending: true })
+      .order("created_at", { ascending: true }),
+    supabase
+      .from(dbTables.fiscalAdjustments)
+      .select(
+        "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
+      )
+      .eq("expediente_id", expedienteId)
+      .order("operation_date", { ascending: true })
+      .order("created_at", { ascending: true })
+  ]);
 
-  if (operationsError) {
-    throw new Error(`No se pudieron cargar operaciones para recalcular el runtime fiscal: ${operationsError.message}`);
+  if (operationsResult.error || adjustmentsResult.error) {
+    throw new Error(
+      `No se pudieron cargar datos para recalcular el runtime fiscal: ${
+        operationsResult.error?.message ?? adjustmentsResult.error?.message ?? "error desconocido"
+      }`
+    );
   }
 
   const runtime = deriveFiscalRuntimeFromOperations({
     expedienteId,
-    operations: (operations ?? []) as RuntimeOperationRow[]
+    operations: (operationsResult.data ?? []) as RuntimeOperationRow[],
+    adjustments: (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[]
   });
 
   const { error: deleteAllocationsError } = await supabase
@@ -683,7 +1032,7 @@ export async function rebuildExpedienteFiscalRuntime(
     .from(dbTables.alerts)
     .delete()
     .eq("expediente_id", expedienteId)
-    .eq("category", "fiscal.blocked_loss")
+    .in("category", ["fiscal.blocked_loss", "fiscal.adjustment"])
     .eq("status", "open");
 
   if (deleteBlockedLossAlertsError) {
@@ -710,6 +1059,32 @@ export async function rebuildExpedienteFiscalRuntime(
     if (insertBlockedLossAlertsError) {
       throw new Error(
         `No se pudieron persistir alertas de pérdidas bloqueadas: ${insertBlockedLossAlertsError.message}`
+      );
+    }
+  }
+
+  const adjustmentIssues = runtime.issues.filter(
+    (issue) => issue.code.startsWith("adjustment_") || issue.code.startsWith("transfer_out_")
+  );
+
+  if (adjustmentIssues.length > 0) {
+    const { error: insertAdjustmentAlertsError } = await supabase.from(dbTables.alerts).insert(
+      adjustmentIssues.map((issue) => ({
+        id: crypto.randomUUID(),
+        expediente_id: expedienteId,
+        severity: "warning" as const,
+        category: "fiscal.adjustment",
+        message: issue.message,
+        status: "open" as const,
+        entity_type: "adjustment",
+        entity_id: issue.operation_id,
+        metadata: issue
+      }))
+    );
+
+    if (insertAdjustmentAlertsError) {
+      throw new Error(
+        `No se pudieron persistir alertas de ajustes fiscales: ${insertAdjustmentAlertsError.message}`
       );
     }
   }

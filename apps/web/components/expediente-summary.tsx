@@ -62,6 +62,7 @@ type ExpedienteLot = {
   status: "OPEN" | "CLOSED";
   source: string;
   sales_count: number;
+  transfers_count: number;
 };
 
 type ExpedienteSaleSummary = {
@@ -101,6 +102,32 @@ type ExpedienteBlockedLoss = {
   blocked_by_buy_source: string;
 };
 
+type ExpedienteAdjustment = {
+  id: string;
+  adjustment_type: "COST_BASIS" | "INHERITANCE" | "TRANSFER_IN" | "TRANSFER_OUT";
+  status: "ACTIVE" | "ARCHIVED";
+  target_operation_id: string | null;
+  operation_date: string;
+  isin: string | null;
+  description: string | null;
+  quantity: number | null;
+  total_amount: number | null;
+  currency: string | null;
+  notes: string | null;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+type ExpedienteRuntimeIssue = {
+  code: string;
+  operation_id: string;
+  isin: string | null;
+  quantity: number | null;
+  message: string;
+};
+
 type ExpedientePayload = {
   expediente_id: string;
   expediente_reference: string;
@@ -128,12 +155,16 @@ type ExpedientePayload = {
     sales_matched: number;
     sales_pending: number;
     blocked_losses: number;
+    adjustments_active: number;
+    runtime_issues: number;
   };
   documents: ExpedienteDocument[];
   operations: ExpedienteOperation[];
   lots: ExpedienteLot[];
+  adjustments: ExpedienteAdjustment[];
   sale_summaries: ExpedienteSaleSummary[];
   blocked_losses: ExpedienteBlockedLoss[];
+  runtime_issues: ExpedienteRuntimeIssue[];
   exports: ExpedienteExport[];
 };
 
@@ -158,13 +189,17 @@ const emptyState: ExpedientePayload = {
     lots_closed: 0,
     sales_matched: 0,
     sales_pending: 0,
-    blocked_losses: 0
+    blocked_losses: 0,
+    adjustments_active: 0,
+    runtime_issues: 0
   },
   documents: [],
   operations: [],
   lots: [],
+  adjustments: [],
   sale_summaries: [],
   blocked_losses: [],
+  runtime_issues: [],
   exports: []
 };
 
@@ -317,6 +352,14 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
             <span>Pérdidas bloqueadas</span>
             <strong>{payload.counts.blocked_losses}</strong>
           </article>
+          <article className="kpi">
+            <span>Ajustes activos</span>
+            <strong>{payload.counts.adjustments_active}</strong>
+          </article>
+          <article className="kpi">
+            <span>Incidencias runtime</span>
+            <strong>{payload.counts.runtime_issues}</strong>
+          </article>
         </div>
         {error ? <p className="badge danger" style={{ marginTop: "12px" }}>{error}</p> : null}
       </section>
@@ -370,6 +413,43 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                       )}
                     </td>
                     <td>{document.uploaded_at ? new Date(document.uploaded_at).toLocaleString("es-ES") : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Incidencias de runtime fiscal</h2>
+        {payload.runtime_issues.length === 0 ? (
+          <p className="muted">
+            El runtime fiscal no reporta incidencias activas sobre ventas, lotes o ajustes manuales.
+          </p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Activo</th>
+                  <th>Detalle</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.runtime_issues.map((issue) => (
+                  <tr key={`${issue.code}-${issue.operation_id}`}>
+                    <td>
+                      <span className="badge danger">{issue.code}</span>
+                    </td>
+                    <td>
+                      <strong>{issue.isin ?? "Sin ISIN"}</strong>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {issue.quantity !== null ? `${formatNumber(issue.quantity)} títulos` : "Sin cantidad"}
+                      </div>
+                    </td>
+                    <td>{issue.message}</td>
                   </tr>
                 ))}
               </tbody>
@@ -602,7 +682,7 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                     <td>
                       <div>Origen {formatNumber(lot.quantity_original)}</div>
                       <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
-                        Vendido {formatNumber(lot.quantity_sold)} · Abierto {formatNumber(lot.quantity_open)}
+                        Consumido {formatNumber(lot.quantity_sold)} · Abierto {formatNumber(lot.quantity_open)}
                       </div>
                     </td>
                     <td>
@@ -616,7 +696,7 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                     <td>
                       <span className={badgeClass(lot.status)}>{lot.status}</span>
                       <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
-                        {lot.sales_count} consumo(s) FIFO · {lot.source}
+                        {lot.sales_count} venta(s) FIFO · {lot.transfers_count} traspaso(s) · {lot.source}
                       </div>
                     </td>
                   </tr>

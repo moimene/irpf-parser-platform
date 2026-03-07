@@ -39,12 +39,13 @@ Iniciada:
 - Vista de ganancias/perdidas con coste fiscal consumido y cuadre FIFO por venta
 - Deteccion y trazabilidad de perdidas bloqueadas por recompra en expediente, alerts y preview del modelo 100
 - Validacion de modelo 100 basada en runtime fiscal real, no en `realized_gain` raw del parser
+- Ajustes manuales de coste, herencia y transferencia persistidos en runtime y operables desde expediente
 
 Pendiente para cerrar:
 
 - FIFO fiscal completo
-- Herencias, transferencias y ajustes manuales
-- Vistas operativas de operaciones, lotes y ganancias/perdidas
+- Cierre fiscal explicable y reglas de dominio avanzadas
+- Review editable real con trazabilidad estructurada
 
 Fase 2 queda abierta con la primera slice vertical ya operativa.
 

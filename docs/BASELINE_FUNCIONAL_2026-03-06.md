@@ -91,8 +91,8 @@ La suite E2E cubre:
 | Revision manual | Implementado parcial | `apps/web/app/api/review/[extraction_id]/route.ts` | Aprobacion o rechazo funcional; la correccion ya parchea records aprobados, pero falta UI de edicion lado a lado. |
 | Expediente operativo | Implementado | `apps/web/app/api/expedientes/[id]/route.ts` | Estado, cliente, documentos, exportes. |
 | Dashboard operativo | Implementado | `apps/web/app/api/dashboard/route.ts` | Metricas base de operacion. |
-| Motor fiscal IRPF | Parcial | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts` | Runtime fiscal con lotes y asignaciones FIFO persistidas; faltan ajustes manuales y cierre de dominio completo. |
-| Lotes de adquisicion | Implementado en slice inicial | `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `apps/web/lib/lots.ts` | Runtime derivado por expediente con FIFO basico y vista en expediente; faltan ajustes manuales y cierre fiscal completo. |
+| Motor fiscal IRPF | Parcial avanzada | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts`, `apps/web/lib/fiscal-adjustments.ts` | Runtime fiscal con lotes, asignaciones FIFO, pérdidas bloqueadas y ajustes manuales persistidos; falta cierre de dominio completo y modulos fiscales posteriores. |
+| Lotes de adquisicion | Implementado | `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql`, `apps/web/lib/lots.ts` | Runtime derivado por expediente con FIFO, transferencias de salida y adquisiciones manuales; queda pendiente el cierre fiscal completo y patrimonio. |
 | Patrimonio / IP | Parcial muy inicial | `apps/web/lib/aeat/format.ts` | Export base, no modulo fiscal completo. |
 | Modelo 720 | Parcial muy inicial | `apps/web/lib/aeat/format.ts` | Export simplificado, no solucion completa. |
 | Clientes y ficha cliente | Implementado | `apps/web/app/clientes/page.tsx`, `apps/web/app/clientes/[id]/page.tsx` | Alta, ficha, expedientes y equipo asignado. |
@@ -176,9 +176,9 @@ Ya construido en esta primera slice:
 
 Siguiente foco del track:
 
-- Ajustes manuales de coste, herencia y transferencia.
-- Bloqueos de perdidas con trazabilidad operativa.
-- Vistas de ganancias/perdidas y cierre fiscal explicable.
+- Cierre fiscal explicable sobre el runtime ya persistido.
+- Review editable real con trazabilidad estable al origen estructurado.
+- Patrimonio/IP y AEAT completa como siguientes modulos de dominio.
 
 ### Track 2b. Endurecimiento parser y review
 
@@ -284,6 +284,28 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
   - `npm run lint --workspace apps/web`
   - `npm run build --workspace apps/web`
   - `cd apps/web && E2E_BASE_URL=http://127.0.0.1:3102 npx playwright test` -> `12 passed`
+
+## Actualizacion 2026-03-07 slice ajustes fiscales manuales
+
+- `infra/supabase/migrations/20260307134212_irpf_fiscal_adjustments_runtime_module.sql` crea `irpf_fiscal_adjustments` como tabla runtime para coste, herencia y transferencias.
+- `apps/web/app/api/expedientes/[id]/adjustments/route.ts` y `apps/web/app/api/expedientes/[id]/adjustments/[adjustment_id]/route.ts` exponen CRUD real para ajustes fiscales del expediente.
+- `apps/web/lib/lots.ts` incorpora los ajustes al orden de recálculo fiscal:
+  - corrige compras existentes,
+  - genera adquisiciones manuales,
+  - permite transferencias de salida sin venta fiscal,
+  - y vuelve a emitir incidencias `fiscal.adjustment` junto al resto del runtime.
+- `apps/web/components/fiscal-adjustments-workspace.tsx` añade la UI operativa de alta y borrado de ajustes.
+- `apps/web/app/api/expedientes/[id]/route.ts`, `apps/web/components/expediente-summary.tsx`, `apps/web/app/api/exports/[expediente_id]/route.ts`, `apps/web/app/api/exports/[expediente_id]/download/route.ts` y `apps/web/components/export-generator.tsx` muestran y validan ya el impacto de los ajustes en expediente y modelo 100.
+- `apps/web/e2e/critical-flows.spec.ts`, `apps/web/e2e/lots-runtime.spec.ts` y `apps/web/playwright.config.ts` endurecen la capa de pruebas:
+  - herencia manual desde UI,
+  - coste/herencia/transferencia sobre runtime,
+  - y Playwright serial en entornos `E2E_BASE_URL` para evitar contencion artificial.
+- Supabase remoto quedo alineado el 2026-03-07 con esta migracion; el historial remoto la registra como `20260307134212`.
+- Verificacion ejecutada:
+  - `npm run typecheck --workspace apps/web`
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd apps/web && E2E_BASE_URL=http://127.0.0.1:3104 npx playwright test` -> `15 passed`
 
 ## Decision de gobierno
 

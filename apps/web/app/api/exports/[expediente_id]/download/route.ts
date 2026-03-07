@@ -7,13 +7,12 @@
 import { NextResponse } from "next/server";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
 import {
-  buildTradeEventsFromFiscalRuntime,
-  summarizeSalesFromOperations,
-  type PersistedSaleAllocationRow,
+  deriveFiscalRuntimeFromOperations,
   type RuntimeOperationRow
 } from "@/lib/lots";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
+import type { FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
 import { toAeatRecord } from "@/lib/operations";
 import { validateModel100 } from "@/lib/rules/validation";
 import { createSupabaseAdminClient } from "@/lib/supabase";
@@ -37,17 +36,6 @@ type OperationRow = {
   manual_notes?: string | null;
   source?: "AUTO" | "MANUAL" | "IMPORTACION_EXCEL";
   created_at?: string;
-};
-
-type AllocationRow = {
-  sale_operation_id: string;
-  quantity: number | string;
-  sale_amount_allocated: number | string | null;
-  total_cost: number | string | null;
-  realized_gain: number | string | null;
-  acquisition_date: string;
-  acquisition_operation_id: string | null;
-  currency: string | null;
 };
 
 export async function GET(
@@ -76,7 +64,7 @@ export async function GET(
     const resolvedExpediente = normalizeExpedienteId(params.expediente_id);
     await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "exports.generate");
 
-    const [operationsResult, allocationsResult] = await Promise.all([
+    const [operationsResult, adjustmentsResult] = await Promise.all([
       supabase
         .from(dbTables.operations)
         .select(
@@ -86,19 +74,19 @@ export async function GET(
         .order("operation_date", { ascending: true }),
       modelParam === "100"
         ? supabase
-            .from(dbTables.saleAllocations)
+            .from(dbTables.fiscalAdjustments)
             .select(
-              "sale_operation_id, quantity, sale_amount_allocated, total_cost, realized_gain, acquisition_date, acquisition_operation_id, currency"
+              "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
             )
             .eq("expediente_id", resolvedExpediente.id)
-        : Promise.resolve({ data: [] as AllocationRow[], error: null })
+        : Promise.resolve({ data: [] as FiscalAdjustmentRow[], error: null })
     ]);
 
-    if (operationsResult.error || allocationsResult.error) {
+    if (operationsResult.error || adjustmentsResult.error) {
       return NextResponse.json(
         {
           error: `No se pudieron cargar operaciones: ${
-            operationsResult.error?.message ?? allocationsResult.error?.message
+            operationsResult.error?.message ?? adjustmentsResult.error?.message
           }`
         },
         { status: 500 }
@@ -106,21 +94,35 @@ export async function GET(
     }
 
     const rows = (operationsResult.data ?? []) as OperationRow[];
-    const saleSummaries = summarizeSalesFromOperations({
-      operations: rows as RuntimeOperationRow[],
-      allocations: (allocationsResult.data ?? []) as PersistedSaleAllocationRow[]
-    });
+    const runtime =
+      modelParam === "100"
+        ? deriveFiscalRuntimeFromOperations({
+            expedienteId: resolvedExpediente.id,
+            operations: rows as RuntimeOperationRow[],
+            adjustments: (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[]
+          })
+        : null;
+    const saleSummaries = runtime?.saleSummaries ?? [];
 
     if (modelParam === "100") {
-      const validation = validateModel100({
-        trades: buildTradeEventsFromFiscalRuntime({
-          operations: rows as RuntimeOperationRow[],
-          saleSummaries
-        }),
+      const baseValidation = validateModel100({
+        trades: [],
         unresolvedSales: saleSummaries.filter((sale) => sale.status === "UNRESOLVED").length,
         pendingCostBasisSales: saleSummaries.filter((sale) => sale.status === "PENDING_COST_BASIS").length,
-        invalidSales: saleSummaries.filter((sale) => sale.status === "INVALID_DATA").length
+        invalidSales: saleSummaries.filter((sale) => sale.status === "INVALID_DATA").length,
+        blockedLossesCount: runtime?.blockedLosses.length ?? 0
       });
+      const adjustmentIssues =
+        runtime?.issues.filter(
+          (issue) => issue.code.startsWith("adjustment_") || issue.code.startsWith("transfer_out_")
+        ) ?? [];
+      const validation =
+        adjustmentIssues.length > 0
+          ? {
+              validationState: "errors" as const,
+              messages: [...adjustmentIssues.map((issue) => issue.message), ...baseValidation.messages]
+            }
+          : baseValidation;
 
       if (validation.validationState === "errors") {
         return NextResponse.json(

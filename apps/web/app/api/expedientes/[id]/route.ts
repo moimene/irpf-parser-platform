@@ -5,10 +5,11 @@ import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
 import {
   detectBlockedLossesFromFiscalRuntime,
-  summarizeSalesFromOperations,
-  type PersistedSaleAllocationRow,
+  deriveFiscalRuntimeFromOperations,
+  type FiscalRuntimeIssue,
   type RuntimeOperationRow
 } from "@/lib/lots";
+import { serializeFiscalAdjustment, type FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -65,17 +66,6 @@ type OperationRow = {
   created_at: string;
 };
 
-type AllocationRow = {
-  sale_operation_id: string;
-  quantity: number | string;
-  sale_amount_allocated: number | string | null;
-  total_cost: number | string | null;
-  realized_gain: number | string | null;
-  acquisition_date: string;
-  acquisition_operation_id: string | null;
-  currency: string | null;
-};
-
 type LotRow = {
   id: string;
   acquisition_operation_id: string | null;
@@ -95,6 +85,7 @@ type LotRow = {
 };
 
 type BlockedLossRow = ReturnType<typeof detectBlockedLossesFromFiscalRuntime>[number];
+type RuntimeIssueRow = FiscalRuntimeIssue;
 
 type ExpedienteRow = {
   id: string;
@@ -131,6 +122,11 @@ function countLotSales(payload: JsonObject | null): number {
   return Array.isArray(candidate) ? candidate.length : 0;
 }
 
+function countLotTransfers(payload: JsonObject | null): number {
+  const candidate = payload?.transfers_out;
+  return Array.isArray(candidate) ? candidate.length : 0;
+}
+
 export async function GET(
   _request: Request,
   { params }: { params: { id: string } }
@@ -145,7 +141,7 @@ export async function GET(
     const resolvedExpediente = normalizeExpedienteId(params.id);
     await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "expedientes.read");
 
-    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, allocationsResult] = await Promise.all([
+    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, adjustmentsResult] = await Promise.all([
       supabase
         .from(dbTables.expedientes)
         .select("id, reference, client_id, fiscal_year, model_type, title, status, created_at, updated_at")
@@ -178,13 +174,13 @@ export async function GET(
         .order("acquisition_date", { ascending: true })
         .order("created_at", { ascending: true }),
       supabase
-        .from(dbTables.saleAllocations)
+        .from(dbTables.fiscalAdjustments)
         .select(
-          "sale_operation_id, quantity, sale_amount_allocated, total_cost, realized_gain, acquisition_date, acquisition_operation_id, currency"
+          "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
         )
         .eq("expediente_id", resolvedExpediente.id)
-        .order("sale_date", { ascending: true })
-        .order("acquisition_date", { ascending: true })
+        .order("operation_date", { ascending: true })
+        .order("created_at", { ascending: true })
     ]);
 
     if (
@@ -192,7 +188,7 @@ export async function GET(
       exportsResult.error ||
       operationsResult.error ||
       lotsResult.error ||
-      allocationsResult.error
+      adjustmentsResult.error
     ) {
       return NextResponse.json(
         {
@@ -201,7 +197,7 @@ export async function GET(
             exportsResult.error?.message ??
             operationsResult.error?.message ??
             lotsResult.error?.message ??
-            allocationsResult.error?.message ??
+            adjustmentsResult.error?.message ??
             "No se pudo cargar el expediente"
         },
         { status: 500 }
@@ -220,7 +216,7 @@ export async function GET(
     const exportsRows = (exportsResult.data ?? []) as ExportRow[];
     const operationsRows = (operationsResult.data ?? []) as OperationRow[];
     const lotsRows = (lotsResult.data ?? []) as LotRow[];
-    const allocationsRows = (allocationsResult.data ?? []) as AllocationRow[];
+    const adjustmentsRows = (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[];
     const client = expediente?.client_id ? await findClientCompat(supabase, expediente.client_id) : null;
 
     const documentIds = documents.map((document) => document.id);
@@ -316,13 +312,17 @@ export async function GET(
       currency: row.currency,
       status: row.status,
       source: row.source,
-      sales_count: countLotSales(row.metadata)
+      sales_count: countLotSales(row.metadata),
+      transfers_count: countLotTransfers(row.metadata)
     }));
 
-    const saleSummaries = summarizeSalesFromOperations({
+    const runtime = deriveFiscalRuntimeFromOperations({
+      expedienteId: resolvedExpediente.id,
       operations: operationsRows as RuntimeOperationRow[],
-      allocations: allocationsRows as PersistedSaleAllocationRow[]
-    }).map((summary) => ({
+      adjustments: adjustmentsRows
+    });
+
+    const saleSummaries = runtime.saleSummaries.map((summary) => ({
       sale_operation_id: summary.sale_operation_id,
       operation_date: summary.operation_date,
       isin: summary.isin,
@@ -340,10 +340,7 @@ export async function GET(
       status: summary.status,
       source: summary.source
     }));
-    const blockedLosses = detectBlockedLossesFromFiscalRuntime({
-      operations: operationsRows as RuntimeOperationRow[],
-      saleSummaries
-    }).map((blockedLoss: BlockedLossRow) => ({
+    const blockedLosses = runtime.blockedLosses.map((blockedLoss: BlockedLossRow) => ({
       sale_operation_id: blockedLoss.sale_operation_id,
       blocked_by_buy_operation_id: blockedLoss.blocked_by_buy_operation_id,
       isin: blockedLoss.isin,
@@ -359,6 +356,13 @@ export async function GET(
       blocked_by_buy_description: blockedLoss.blocked_by_buy_description,
       sale_source: blockedLoss.sale_source,
       blocked_by_buy_source: blockedLoss.blocked_by_buy_source
+    }));
+    const runtimeIssues = runtime.issues.map((issue: RuntimeIssueRow) => ({
+      code: issue.code,
+      operation_id: issue.operation_id,
+      isin: issue.isin ?? null,
+      quantity: issue.quantity ?? null,
+      message: issue.message
     }));
 
     return NextResponse.json({
@@ -392,13 +396,17 @@ export async function GET(
         lots_closed: responseLots.filter((lot) => lot.status === "CLOSED").length,
         sales_matched: saleSummaries.filter((sale) => sale.status === "MATCHED").length,
         sales_pending: saleSummaries.filter((sale) => sale.status !== "MATCHED").length,
-        blocked_losses: blockedLosses.length
+        blocked_losses: blockedLosses.length,
+        adjustments_active: adjustmentsRows.filter((adjustment) => adjustment.status === "ACTIVE").length,
+        runtime_issues: runtimeIssues.length
       },
       documents: responseDocuments,
       operations: responseOperations,
       lots: responseLots,
+      adjustments: adjustmentsRows.map(serializeFiscalAdjustment),
       sale_summaries: saleSummaries,
       blocked_losses: blockedLosses,
+      runtime_issues: runtimeIssues,
       exports: exportsRows.map((row) => ({
         id: row.id,
         model: row.model,

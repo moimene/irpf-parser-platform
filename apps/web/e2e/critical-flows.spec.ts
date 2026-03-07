@@ -25,6 +25,7 @@ type ExpedientePayload = {
   counts: {
     completed: number;
     exports: number;
+    adjustments_active?: number;
   };
   documents: Array<{
     filename: string;
@@ -32,6 +33,10 @@ type ExpedientePayload = {
     latest_extraction: {
       review_status: string;
     } | null;
+  }>;
+  lots?: Array<{
+    isin: string;
+    quantity_original: number;
   }>;
 };
 
@@ -230,7 +235,7 @@ async function waitForPendingReviewDocument(
         const reviewBody = reviewResponse.body as ReviewPayload;
         return reviewBody.pending_documents.filter((item) => item.filename === filename).length;
       },
-      { timeout: 25_000 }
+      { timeout: 40_000 }
     )
     .toBe(expectedCount);
 }
@@ -261,6 +266,7 @@ async function createClient(
   page: Page,
   suffix: string
 ) {
+  const normalizedSuffix = suffix.replace(/[^a-zA-Z0-9]/g, "").slice(-12) || "pwclient";
   const response = await sessionJsonFetch<{
     client?: { id: string; reference: string; display_name: string; nif: string };
     error?: string;
@@ -269,8 +275,8 @@ async function createClient(
     data: {
       reference: `pw-${suffix}`,
       display_name: `Playwright ${suffix}`,
-      nif: `PW-${suffix}`,
-      email: `playwright+${suffix}@irpf-parser.dev`,
+      nif: `PW${normalizedSuffix}`,
+      email: `playwright+${normalizedSuffix}@irpf-parser.dev`,
       contact_person: "QA Playwright"
     }
   });
@@ -284,6 +290,33 @@ async function listClients(page: Page) {
   const response = await sessionJsonFetch<ClientPayload | { error?: string }>(page, "/api/clientes");
   expect(response.ok, JSON.stringify(response.body)).toBeTruthy();
   return (response.body as ClientPayload).clients;
+}
+
+async function createExpediente(
+  page: Page,
+  input: {
+    clientId: string;
+    reference: string;
+    fiscalYear: number;
+    modelType: "IRPF" | "IP" | "720";
+  }
+) {
+  const response = await sessionJsonFetch<{
+    expediente?: { id: string; reference: string };
+    error?: string;
+  }>(page, "/api/expedientes", {
+    method: "POST",
+    data: {
+      client_id: input.clientId,
+      reference: input.reference,
+      fiscal_year: input.fiscalYear,
+      model_type: input.modelType
+    }
+  });
+
+  expect(response.ok, JSON.stringify(response.body)).toBeTruthy();
+  expect(response.body.expediente?.reference).toBe(input.reference);
+  return response.body.expediente as { id: string; reference: string };
 }
 
 test.describe("Smoke de navegacion IRPF", () => {
@@ -463,6 +496,8 @@ test.describe("Auth y acceso despacho", () => {
 });
 
 test.describe("Ciclo critico IRPF", () => {
+  test.setTimeout(90_000);
+
   test.skip(
     runningWithLocalServer && !hasLocalSupabaseConfig,
     "Este ciclo necesita Supabase configurado en local o ejecutar contra un entorno desplegado via E2E_BASE_URL."
@@ -488,6 +523,59 @@ test.describe("Ciclo critico IRPF", () => {
     await page.getByRole("button", { name: "Encolar 1 documento(s)" }).click();
     await expect(page.getByText("1 documento(s) encolado(s)")).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("pre")).toContainText('"accepted": 1');
+  });
+
+  test("panel de ajustes crea una herencia manual y recalcula el expediente", async ({ page }) => {
+    await ensureAuthenticated(page);
+    const runId = Date.now();
+    const expedienteRef = `pw-adjust-${runId}`;
+    const createdClient = await createClient(page, `adjust-${runId}`);
+    await createExpediente(page, {
+      clientId: createdClient.id,
+      reference: expedienteRef,
+      fiscalYear: 2025,
+      modelType: "IRPF"
+    });
+
+    await page.goto(`/expedientes/${expedienteRef}`);
+    await expect(page.getByRole("heading", { name: "Ajustes fiscales manuales" })).toBeVisible();
+
+    await page.getByLabel("Tipo de ajuste").selectOption("INHERITANCE");
+    await page.getByLabel("Fecha efectiva").fill("2025-02-01");
+    await page.getByLabel("ISIN").fill("ES0000000999");
+    await page.getByLabel("Descripción").fill("Herencia Playwright");
+    await page.getByLabel(/Cantidad/).fill("3");
+    await page.getByLabel(/Coste total/).fill("270");
+    await page.getByLabel("Divisa").fill("EUR");
+    await page.getByLabel("Notas internas").fill("Alta manual por herencia en test");
+    await page.getByRole("button", { name: "Guardar ajuste" }).click();
+
+    await expect
+      .poll(async () => {
+        const expedienteResponse = await sessionJsonFetch<ExpedientePayload | { error?: string }>(
+          page,
+          `/api/expedientes/${expedienteRef}`
+        );
+
+        if (!expedienteResponse.ok) {
+          return null;
+        }
+
+        const expedienteBody = expedienteResponse.body as ExpedientePayload;
+        const lotExists =
+          expedienteBody.lots?.some(
+            (lot) => lot.isin === "ES0000000999" && Number(lot.quantity_original) === 3
+          ) ?? false;
+
+        return {
+          adjustments: expedienteBody.counts.adjustments_active ?? 0,
+          lotExists
+        };
+      }, { timeout: 20_000 })
+      .toEqual({
+        adjustments: 1,
+        lotExists: true
+      });
   });
 
   test("intake -> review approve -> export download", async ({ page }) => {

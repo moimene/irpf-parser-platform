@@ -14,6 +14,13 @@ type ExportResult = {
  artifact_hash: string;
  generated_at: string;
  messages: string[];
+ runtime_issues?: Array<{
+ code: string;
+ operation_id: string;
+ isin?: string | null;
+ quantity?: number | null;
+ message: string;
+ }>;
  blocked_losses?: Array<{
  sale_operation_id: string;
  blocked_by_buy_operation_id: string;
@@ -186,6 +193,20 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  ))}
  </ul>
  )}
+ {result.runtime_issues && result.runtime_issues.length > 0 ? (
+ <div style={{ marginTop: "12px" }}>
+ <p className="muted" style={{ marginBottom: "8px" }}>
+ Incidencias de runtime detectadas antes de exportar:
+ </p>
+ <ul style={{ marginTop: "8px", paddingLeft: "1.2rem" }}>
+ {result.runtime_issues.map((issue) => (
+ <li key={`${issue.code}-${issue.operation_id}`} className="muted" style={{ fontSize: "0.85rem" }}>
+ {issue.message}
+ </li>
+ ))}
+ </ul>
+ </div>
+ ) : null}
  {result.blocked_losses && result.blocked_losses.length > 0 ? (
  <div style={{ marginTop: "12px" }}>
  <p className="muted" style={{ marginBottom: "8px" }}>

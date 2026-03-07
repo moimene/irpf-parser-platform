@@ -10,8 +10,9 @@ export function validateModel100(input: {
   unresolvedSales: number;
   pendingCostBasisSales: number;
   invalidSales: number;
+  blockedLossesCount?: number;
 }): ExportValidationSummary {
-  const blockedLosses = detectBlockedLosses(input.trades);
+  const blockedLossesCount = input.blockedLossesCount ?? detectBlockedLosses(input.trades).length;
   const messages: string[] = [];
 
   if (input.invalidSales > 0) {
@@ -32,9 +33,9 @@ export function validateModel100(input: {
     );
   }
 
-  if (blockedLosses.length > 0) {
+  if (blockedLossesCount > 0) {
     messages.push(
-      `${blockedLosses.length} perdida(s) bloqueada(s) por recompra detectada(s) en reglas 2/12 meses.`
+      `${blockedLossesCount} perdida(s) bloqueada(s) por recompra detectada(s) en reglas 2/12 meses.`
     );
   }
 
@@ -46,7 +47,7 @@ export function validateModel100(input: {
   }
 
   return {
-    validationState: blockedLosses.length > 0 ? "warnings" : "ok",
+    validationState: blockedLossesCount > 0 ? "warnings" : "ok",
     messages
   };
 }

@@ -5,12 +5,11 @@ import { isExportModel, type ExportModel } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
 import {
-  buildTradeEventsFromFiscalRuntime,
   detectBlockedLossesFromFiscalRuntime,
-  summarizeSalesFromOperations,
-  type PersistedSaleAllocationRow,
+  deriveFiscalRuntimeFromOperations,
   type RuntimeOperationRow
 } from "@/lib/lots";
+import type { FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
 import { validateModel100, validateModel714, validateModel720 } from "@/lib/rules/validation";
 import { sha256 } from "@/lib/hash";
 import { createSupabaseAdminClient } from "@/lib/supabase";
@@ -41,51 +40,44 @@ async function loadModel100Runtime(
   supabase: SupabaseClient,
   expedienteId: string
 ): Promise<{
-  trades: ReturnType<typeof buildTradeEventsFromFiscalRuntime>;
-  saleSummaries: ReturnType<typeof summarizeSalesFromOperations>;
+  saleSummaries: ReturnType<typeof deriveFiscalRuntimeFromOperations>["saleSummaries"];
   blockedLosses: ReturnType<typeof detectBlockedLossesFromFiscalRuntime>;
+  issues: ReturnType<typeof deriveFiscalRuntimeFromOperations>["issues"];
 }> {
-  const [operationsResult, allocationsResult] = await Promise.all([
+  const [operationsResult, adjustmentsResult] = await Promise.all([
     supabase
-    .from(dbTables.operations)
+      .from(dbTables.operations)
       .select(
         "id, expediente_id, isin, operation_type, operation_date, description, amount, currency, quantity, realized_gain, source, manual_notes, created_at"
       )
       .eq("expediente_id", expedienteId)
       .in("operation_type", ["COMPRA", "VENTA"]),
     supabase
-      .from(dbTables.saleAllocations)
+      .from(dbTables.fiscalAdjustments)
       .select(
-        "sale_operation_id, quantity, sale_amount_allocated, total_cost, realized_gain, acquisition_date, acquisition_operation_id, currency"
+        "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
       )
       .eq("expediente_id", expedienteId)
   ]);
 
-  if (operationsResult.error || allocationsResult.error) {
+  if (operationsResult.error || adjustmentsResult.error) {
     throw new Error(
       `No se pudo cargar el runtime fiscal del modelo 100: ${
-        operationsResult.error?.message ?? allocationsResult.error?.message ?? "error desconocido"
+        operationsResult.error?.message ?? adjustmentsResult.error?.message ?? "error desconocido"
       }`
     );
   }
 
-  const operations = (operationsResult.data ?? []) as OperationRow[];
-  const allocations = (allocationsResult.data ?? []) as PersistedSaleAllocationRow[];
-  const saleSummaries = summarizeSalesFromOperations({
-    operations: operations as RuntimeOperationRow[],
-    allocations
+  const runtime = deriveFiscalRuntimeFromOperations({
+    expedienteId,
+    operations: (operationsResult.data ?? []) as OperationRow[],
+    adjustments: (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[]
   });
 
   return {
-    saleSummaries,
-    blockedLosses: detectBlockedLossesFromFiscalRuntime({
-      operations: operations as RuntimeOperationRow[],
-      saleSummaries
-    }),
-    trades: buildTradeEventsFromFiscalRuntime({
-      operations: operations as RuntimeOperationRow[],
-      saleSummaries
-    })
+    saleSummaries: runtime.saleSummaries,
+    blockedLosses: runtime.blockedLosses,
+    issues: runtime.issues
   };
 }
 
@@ -142,20 +134,36 @@ export async function GET(request: Request, context: { params: { expediente_id: 
     const model100Runtime =
       model === "100" ? await loadModel100Runtime(supabase, resolvedExpediente.id) : null;
 
-    const validation =
+    const baseValidation =
       model === "100"
         ? validateModel100({
-            trades: model100Runtime?.trades ?? [],
+            trades: [],
             unresolvedSales:
               model100Runtime?.saleSummaries.filter((sale) => sale.status === "UNRESOLVED").length ?? 0,
             pendingCostBasisSales:
               model100Runtime?.saleSummaries.filter((sale) => sale.status === "PENDING_COST_BASIS").length ?? 0,
             invalidSales:
-              model100Runtime?.saleSummaries.filter((sale) => sale.status === "INVALID_DATA").length ?? 0
+              model100Runtime?.saleSummaries.filter((sale) => sale.status === "INVALID_DATA").length ?? 0,
+            blockedLossesCount: model100Runtime?.blockedLosses.length ?? 0
           })
         : model === "714"
           ? validateModel714()
           : validateModel720();
+
+    const adjustmentIssues =
+      model === "100"
+        ? (model100Runtime?.issues.filter(
+            (issue) => issue.code.startsWith("adjustment_") || issue.code.startsWith("transfer_out_")
+          ) ?? [])
+        : [];
+
+    const validation =
+      adjustmentIssues.length > 0
+        ? {
+            validationState: "errors" as const,
+            messages: [...adjustmentIssues.map((issue) => issue.message), ...baseValidation.messages]
+          }
+        : baseValidation;
 
     const artifactHash = sha256(
       JSON.stringify({
@@ -163,7 +171,6 @@ export async function GET(request: Request, context: { params: { expediente_id: 
         model,
         generatedAt,
         validation,
-        trades: model100Runtime?.trades.length ?? 0,
         sales: model100Runtime?.saleSummaries.length ?? 0
       })
     );
@@ -179,6 +186,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       generated_at: generatedAt,
       messages: validation.messages,
       blocked_losses: model100Runtime?.blockedLosses ?? [],
+      runtime_issues: adjustmentIssues,
       current_user: {
         reference: sessionUser.reference,
         display_name: sessionUser.display_name,
@@ -200,9 +208,9 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       generated_by: sessionUser.reference,
       payload: {
         messages: validation.messages,
-        trades_count: model100Runtime?.trades.length ?? 0,
         sales_count: model100Runtime?.saleSummaries.length ?? 0,
         blocked_losses: model100Runtime?.blockedLosses ?? [],
+        runtime_issues: adjustmentIssues,
         expediente_reference: resolvedExpediente.reference
       }
     });

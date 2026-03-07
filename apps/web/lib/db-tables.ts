@@ -6,6 +6,7 @@ export const dbTables = {
   documents: "irpf_documents",
   extractions: "irpf_extractions",
   operations: "irpf_operations",
+  fiscalAdjustments: "irpf_fiscal_adjustments",
   lots: "irpf_lots",
   saleAllocations: "irpf_sale_allocations",
   alerts: "irpf_alerts",

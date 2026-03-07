@@ -5,6 +5,7 @@ const externalBaseUrl = process.env.E2E_BASE_URL;
 export default defineConfig({
   testDir: "./e2e",
   timeout: 45_000,
+  workers: externalBaseUrl ? 1 : undefined,
   expect: {
     timeout: 7_000
   },
