@@ -23,6 +23,8 @@ def test_template_detects_pictet_dividend() -> None:
     assert response.structured_document is not None
     assert response.structured_document.backend == "text"
     assert response.structured_document.pages
+    assert response.fiscal_events
+    assert response.fiscal_events[0]["event_type"] == "DIVIDEND"
 
 
 def test_semantic_fallback_requires_manual_when_low_signal() -> None:
@@ -62,6 +64,8 @@ def test_csv_builds_structured_document_and_records() -> None:
     assert response.structured_document.source_type == "CSV"
     assert response.structured_document.backend == "csv"
     assert response.structured_document.pages[0].tables
+    assert response.asset_records
+    assert response.fiscal_events
 
 
 def test_xlsx_builds_structured_document_and_records() -> None:
@@ -93,3 +97,5 @@ def test_xlsx_builds_structured_document_and_records() -> None:
     assert response.structured_document.source_type == "XLSX"
     assert response.structured_document.backend == "xlsx"
     assert response.structured_document.pages[0].tables
+    assert response.asset_records
+    assert response.fiscal_events

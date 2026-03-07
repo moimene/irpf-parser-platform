@@ -7,6 +7,7 @@ Motor de parseo adaptativo en 3 niveles:
 """
 from typing import List, Optional, Tuple
 
+from app.canonical_registry import derive_canonical_registry
 from app.extractors import base as base_utils
 from app.extractors import citi, goldman, jpmorgan, pictet
 from app.extractors.base import ExtractedRecord
@@ -313,6 +314,8 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
         parsed_records.append(parsed_record)
         all_spans.append(span)
 
+    asset_records, fiscal_events = derive_canonical_registry(parsed_records)
+
     return ParseDocumentResponse(
         document_id=request.document_id,
         expediente_id=request.expediente_id,
@@ -321,6 +324,8 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
         confidence=global_confidence,
         requires_manual_review=requires_manual_review,
         records=parsed_records,
+        asset_records=asset_records,
+        fiscal_events=fiscal_events,
         source_spans=all_spans,
         structured_document=structured_document,
         warnings=warnings,

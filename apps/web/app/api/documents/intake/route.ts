@@ -15,6 +15,7 @@ import { mimeTypeForDocumentSourceType } from "@/lib/document-source";
 import { normalizeExpedienteId, isUuid } from "@/lib/expediente-id";
 import { emitWorkflowEvent } from "@/lib/events";
 import { env } from "@/lib/env";
+import { deriveCanonicalRegistryFromParsePayload, replaceDocumentCanonicalRegistry } from "@/lib/canonical-registry";
 import { buildOperationsFromRecords, replaceDocumentOperations } from "@/lib/operations";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
@@ -116,6 +117,11 @@ async function processWithParser(payload: {
 
     const parsed: ParseDocumentResponse = await response.json();
     const status: ProcessingStatus = parsed.requires_manual_review ? "manual_review" : "completed";
+    const canonical = deriveCanonicalRegistryFromParsePayload({
+      records: parsed.records,
+      assetRecords: parsed.asset_records,
+      fiscalEvents: parsed.fiscal_events
+    });
 
     const { error: updateError } = await supabase
       .from(dbTables.documents)
@@ -144,6 +150,8 @@ async function processWithParser(payload: {
       },
       normalized_payload: {
         records: parsed.records,
+        asset_records: canonical.assetRecords,
+        fiscal_events: canonical.fiscalEvents,
         parser_strategy: parsed.parser_strategy,
         template_used: parsed.template_used,
         source_type: payload.sourceType ?? "PDF"
@@ -166,6 +174,14 @@ async function processWithParser(payload: {
       });
 
       await replaceDocumentOperations(supabase, payload.documentId, payload.expedienteId, operations);
+      await replaceDocumentCanonicalRegistry(supabase, {
+        expedienteId: payload.expedienteId,
+        documentId: payload.documentId,
+        records: parsed.records,
+        assetRecords: canonical.assetRecords,
+        fiscalEvents: canonical.fiscalEvents,
+        source: "AUTO"
+      });
     }
 
     await emitWorkflowEvent(
@@ -178,6 +194,8 @@ async function processWithParser(payload: {
         confidence: parsed.confidence,
         warnings: parsed.warnings,
         records: parsed.records.length,
+        asset_records: canonical.assetRecords.length,
+        fiscal_events: canonical.fiscalEvents.length,
         source_type: payload.sourceType ?? "PDF",
         structured_backend: parsed.structured_document?.backend ?? null,
         started_at: startedAt,

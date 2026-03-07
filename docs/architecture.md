@@ -79,6 +79,7 @@ La capa de revision manual ya no es solo una cola:
 - `GET /api/review/:extraction_id` devuelve records y `structured_document` normalizados para edicion.
 - `PATCH /api/review/:extraction_id` soporta guardar borrador (`request_correction`) o aprobar/rechazar persistiendo correcciones sobre `normalized_payload.records`.
 - `apps/web/components/review-board.tsx` renderiza seleccion de documento, editor por registro/campo y visor lateral del `structured_document`.
+- `POST /api/documents/intake` y `PATCH /api/review/:extraction_id` proyectan ya `records` a `asset_records` y `fiscal_events`, y persisten esa capa en `irpf_asset_registry` e `irpf_asset_fiscal_events` cuando el documento queda aceptado.
 
 Limitacion vigente de esta capa:
 

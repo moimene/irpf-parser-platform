@@ -103,6 +103,7 @@ export interface CanonicalAssetMovableDetails {
 
 export interface CanonicalAssetRecord {
   id?: string;
+  asset_link_key?: string | null;
   expediente_id?: string;
   declaration_profile_id?: string | null;
   client_id?: string | null;
@@ -135,6 +136,7 @@ export interface CanonicalAssetRecord {
 
 export interface CanonicalFiscalEvent {
   id?: string;
+  asset_link_key?: string | null;
   expediente_id?: string;
   asset_id?: string | null;
   document_id?: string | null;

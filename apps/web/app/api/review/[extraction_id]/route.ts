@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
 import { dbTables } from "@/lib/db-tables";
+import { deriveCanonicalRegistryFromParsePayload, replaceDocumentCanonicalRegistry } from "@/lib/canonical-registry";
 import { applyCorrectedFieldsToRecords } from "@/lib/extraction-records";
 import { normalizeParsedRecords, normalizeSourceSpans, normalizeStructuredDocument } from "@/lib/review-editor";
 import { buildOperationsFromRecords, replaceDocumentOperations } from "@/lib/operations";
@@ -106,6 +107,8 @@ export async function GET(
         warnings: readWarnings(rawPayload),
         source_spans: normalizeSourceSpans(rawPayload?.source_spans),
         records: normalizeParsedRecords(normalizedPayload?.records),
+        asset_records: Array.isArray(normalizedPayload?.asset_records) ? normalizedPayload.asset_records : [],
+        fiscal_events: Array.isArray(normalizedPayload?.fiscal_events) ? normalizedPayload.fiscal_events : [],
         structured_document: normalizeStructuredDocument(rawPayload?.structured_document)
       }
     });
@@ -179,10 +182,17 @@ export async function PATCH(
         ? (updatedPayload.records as Array<Record<string, unknown>>)
         : [];
       const correctedRecords = applyCorrectedFieldsToRecords(currentRecords, corrected_fields);
+      const canonical = deriveCanonicalRegistryFromParsePayload({
+        records: correctedRecords,
+        assetRecords: updatedPayload.asset_records,
+        fiscalEvents: updatedPayload.fiscal_events
+      });
 
       updatedPayload = {
         ...updatedPayload,
         records: correctedRecords,
+        asset_records: canonical.assetRecords,
+        fiscal_events: canonical.fiscalEvents,
         corrections: corrected_fields,
         corrected_by: reviewer,
         corrected_at: new Date().toISOString()
@@ -207,8 +217,15 @@ export async function PATCH(
     }
 
     let operationsSaved = 0;
+    let assetsSaved = 0;
+    let fiscalEventsSaved = 0;
     if (action === "approve") {
       const records = (updatedPayload.records as Array<Record<string, unknown>>) ?? [];
+      const canonical = deriveCanonicalRegistryFromParsePayload({
+        records,
+        assetRecords: updatedPayload.asset_records,
+        fiscalEvents: updatedPayload.fiscal_events
+      });
       const operationsToInsert = buildOperationsFromRecords({
         records,
         expedienteId: document.expediente_id,
@@ -225,6 +242,18 @@ export async function PATCH(
           document.expediente_id,
           operationsToInsert
         );
+        const canonicalResult = await replaceDocumentCanonicalRegistry(supabase, {
+          expedienteId: document.expediente_id,
+          documentId: extraction.document_id,
+          records,
+          assetRecords: canonical.assetRecords,
+          fiscalEvents: canonical.fiscalEvents,
+          source: "MANUAL",
+          reviewedBy: reviewer,
+          manualNotes: notes
+        });
+        assetsSaved = canonicalResult.assetsSaved;
+        fiscalEventsSaved = canonicalResult.fiscalEventsSaved;
       } catch (error) {
         return NextResponse.json(
           {
@@ -257,7 +286,9 @@ export async function PATCH(
       after_data: {
         review_status: newReviewStatus,
         notes,
-        operations_saved: operationsSaved
+        operations_saved: operationsSaved,
+        assets_saved: assetsSaved,
+        fiscal_events_saved: fiscalEventsSaved
       }
     });
 
@@ -265,9 +296,11 @@ export async function PATCH(
       extraction_id: extractionId,
       review_status: newReviewStatus,
       operations_saved: operationsSaved,
+      assets_saved: assetsSaved,
+      fiscal_events_saved: fiscalEventsSaved,
       message:
         action === "approve"
-          ? `Aprobado. ${operationsSaved} operación(es) guardadas en irpf_operations.`
+          ? `Aprobado. ${operationsSaved} operación(es), ${assetsSaved} activo(s) y ${fiscalEventsSaved} evento(s) fiscal(es) guardados.`
           : action === "reject"
             ? "Documento rechazado. Requiere nueva ingesta."
             : hasCorrections

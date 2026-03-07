@@ -1,0 +1,1017 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { CanonicalAssetRecord, CanonicalFiscalEvent, ParsedRecord } from "@/lib/contracts";
+import { dbTables } from "@/lib/db-tables";
+
+type JsonObject = Record<string, unknown>;
+type CanonicalSource = "AUTO" | "MANUAL" | "IMPORTACION_EXCEL" | "RUNTIME";
+type AssetClass = CanonicalAssetRecord["asset_class"];
+
+const explicitAssetRecordTypes = new Set<ParsedRecord["record_type"]>([
+  "CUENTA",
+  "VALOR",
+  "IIC",
+  "SEGURO",
+  "INMUEBLE",
+  "BIEN_MUEBLE",
+  "CUENTA_BANCARIA",
+  "POSICION"
+]);
+
+const explicitFiscalEventRecordTypes = new Set<ParsedRecord["record_type"]>([
+  "DIVIDENDO",
+  "INTERES",
+  "RENTA",
+  "RETENCION",
+  "COMPRA",
+  "VENTA"
+]);
+
+function isObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readString(payload: unknown, key: string): string | null {
+  if (!isObject(payload)) {
+    return null;
+  }
+
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readNumber(payload: unknown, key: string): number | null {
+  if (!isObject(payload)) {
+    return null;
+  }
+
+  const value = payload[key];
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function readBoolean(payload: unknown, key: string): boolean | null {
+  if (!isObject(payload)) {
+    return null;
+  }
+
+  const value = payload[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeCountryCode(value: string | null | undefined): string {
+  return value?.trim().toUpperCase() || "ES";
+}
+
+function normalizeLocationKey(
+  locationKey: string | null | undefined,
+  countryCode: string
+): CanonicalAssetRecord["location_key"] {
+  if (locationKey === "ES" || locationKey === "EX") {
+    return locationKey;
+  }
+
+  return countryCode === "ES" ? "ES" : "EX";
+}
+
+function normalizeDate(value: string | null | undefined): string {
+  if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeAssetLinkKey(candidate: string | null | undefined): string | null {
+  return candidate?.trim() ? candidate.trim() : null;
+}
+
+function buildAssetLinkKey(asset: Partial<CanonicalAssetRecord>): string {
+  const identifier =
+    asset.security?.security_identifier ??
+    asset.collective_investment?.security_identifier ??
+    asset.account?.account_code ??
+    asset.real_estate?.cadastral_reference ??
+    asset.movable?.registry_reference ??
+    asset.asset_description ??
+    asset.entity_name ??
+    "UNKNOWN";
+
+  return [
+    asset.asset_class ?? "UNKNOWN",
+    asset.asset_key ?? "X",
+    asset.asset_subkey ?? "0",
+    normalizeCountryCode(asset.country_code),
+    identifier.trim().toUpperCase()
+  ].join("|");
+}
+
+function normalizeAssetClass(recordType: ParsedRecord["record_type"], fields: JsonObject): AssetClass | null {
+  switch (recordType) {
+    case "CUENTA":
+    case "CUENTA_BANCARIA":
+      return "ACCOUNT";
+    case "VALOR":
+      return "SECURITY";
+    case "IIC":
+      return "COLLECTIVE_INVESTMENT";
+    case "SEGURO":
+      return "INSURANCE";
+    case "INMUEBLE":
+      return "REAL_ESTATE";
+    case "BIEN_MUEBLE":
+      return "MOVABLE_ASSET";
+    case "POSICION":
+      if (readString(fields, "account_code") || readString(fields, "bic")) {
+        return "ACCOUNT";
+      }
+
+      if (readString(fields, "real_estate_type_key") || readString(fields, "real_right_description")) {
+        return "REAL_ESTATE";
+      }
+
+      if (readString(fields, "movable_kind")) {
+        return "MOVABLE_ASSET";
+      }
+
+      if (readString(fields, "insurance_kind")) {
+        return "INSURANCE";
+      }
+
+      if (readString(fields, "asset_key") === "I") {
+        return "COLLECTIVE_INVESTMENT";
+      }
+
+      return "SECURITY";
+    default:
+      return null;
+  }
+}
+
+function defaultAssetKey(assetClass: AssetClass): CanonicalAssetRecord["asset_key"] {
+  switch (assetClass) {
+    case "ACCOUNT":
+      return "C";
+    case "SECURITY":
+      return "V";
+    case "COLLECTIVE_INVESTMENT":
+      return "I";
+    case "INSURANCE":
+      return "S";
+    case "REAL_ESTATE":
+      return "B";
+    case "MOVABLE_ASSET":
+      return "M";
+  }
+}
+
+function defaultAssetSubkey(assetClass: AssetClass, fields: JsonObject): string {
+  const explicit = readString(fields, "asset_subkey") ?? readString(fields, "subclave");
+  if (explicit) {
+    return explicit;
+  }
+
+  switch (assetClass) {
+    case "ACCOUNT":
+      return "5";
+    case "SECURITY":
+      return "1";
+    case "COLLECTIVE_INVESTMENT":
+      return "0";
+    case "INSURANCE":
+      return readString(fields, "insurance_kind")?.includes("ANNUITY") ? "2" : "1";
+    case "REAL_ESTATE":
+      return "1";
+    case "MOVABLE_ASSET":
+      return "1";
+  }
+}
+
+function deriveImplicitAssetFromRecord(
+  record: ParsedRecord | Record<string, unknown>
+): CanonicalAssetRecord | null {
+  const recordType = String((record as Record<string, unknown>).record_type ?? "") as ParsedRecord["record_type"];
+  if (!explicitAssetRecordTypes.has(recordType)) {
+    return null;
+  }
+
+  const fields = isObject((record as Record<string, unknown>).fields)
+    ? ((record as Record<string, unknown>).fields as JsonObject)
+    : {};
+  const assetClass = normalizeAssetClass(recordType, fields);
+  if (!assetClass) {
+    return null;
+  }
+
+  const countryCode = normalizeCountryCode(
+    readString(fields, "country_code") ?? readString(fields, "codigo_pais")
+  );
+  const locationKey = normalizeLocationKey(
+    readString(fields, "location_key") ?? readString(fields, "clave_situacion"),
+    countryCode
+  );
+  const assetKey = (readString(fields, "asset_key") as CanonicalAssetRecord["asset_key"] | null) ?? defaultAssetKey(assetClass);
+
+  const next: CanonicalAssetRecord = {
+    asset_class: assetClass,
+    condition_key:
+      (readString(fields, "condition_key") as CanonicalAssetRecord["condition_key"] | null) ?? "1",
+    asset_key: assetKey,
+    asset_subkey: defaultAssetSubkey(assetClass, fields),
+    country_code: countryCode,
+    location_key: locationKey,
+    incorporation_date: normalizeDate(
+      readString(fields, "incorporation_date") ??
+        readString(fields, "operation_date") ??
+        readString(fields, "event_date")
+    ),
+    origin_key: (readString(fields, "origin_key") as CanonicalAssetRecord["origin_key"] | null) ?? "A",
+    valuation_1_eur:
+      readNumber(fields, "valuation_1_eur") ??
+      readNumber(fields, "amount") ??
+      0,
+    valuation_2_eur: readNumber(fields, "valuation_2_eur"),
+    ownership_percentage: readNumber(fields, "ownership_percentage") ?? 100,
+    entity_name: readString(fields, "entity_name"),
+    asset_description:
+      readString(fields, "asset_description") ??
+      readString(fields, "description"),
+    currency: readString(fields, "currency"),
+    tax_territory_code:
+      readString(fields, "tax_territory_code") ??
+      readString(fields, "codigo_territorio") ??
+      "ES-COMUN",
+    ownership_type_description:
+      readString(fields, "ownership_type_description") ??
+      readString(fields, "tipo_titularidad"),
+    extinction_date: normalizeAssetLinkKey(readString(fields, "extinction_date")),
+    address: {
+      street_line: readString(fields, "street_line") ?? readString(fields, "domicilio_via"),
+      complement: readString(fields, "complement") ?? readString(fields, "domicilio_complemento"),
+      city: readString(fields, "city") ?? readString(fields, "domicilio_poblacion"),
+      region: readString(fields, "region") ?? readString(fields, "domicilio_region"),
+      postal_code: readString(fields, "postal_code") ?? readString(fields, "domicilio_codigo_postal"),
+      country_code: normalizeAssetLinkKey(readString(fields, "domicilio_pais"))
+    },
+    metadata: {
+      source_record_type: recordType
+    }
+  };
+
+  if (assetClass === "ACCOUNT") {
+    next.account = {
+      account_identification_key:
+        (readString(fields, "account_identification_key") as "I" | "O" | null) ??
+        (readString(fields, "clave_identif_cuenta") as "I" | "O" | null) ??
+        "O",
+      bic: readString(fields, "bic") ?? readString(fields, "codigo_bic"),
+      account_code: readString(fields, "account_code") ?? readString(fields, "codigo_cuenta"),
+      entity_tax_id: readString(fields, "entity_tax_id") ?? readString(fields, "nif_entidad_pais")
+    };
+  } else if (assetClass === "SECURITY") {
+    next.security = {
+      identification_key:
+        (readString(fields, "identification_key") as "1" | "2" | null) ??
+        (readString(fields, "clave_identificacion") as "1" | "2" | null) ??
+        (readString(fields, "isin") ? "1" : "2"),
+      security_identifier:
+        readString(fields, "security_identifier") ??
+        readString(fields, "identificacion_valores") ??
+        readString(fields, "isin") ??
+        readString(fields, "description"),
+      entity_tax_id: readString(fields, "entity_tax_id") ?? readString(fields, "nif_entidad_pais"),
+      representation_key:
+        (readString(fields, "representation_key") as "A" | "B" | null) ??
+        (readString(fields, "clave_representacion") as "A" | "B" | null) ??
+        "A",
+      units: readNumber(fields, "quantity") ?? readNumber(fields, "numero_valores"),
+      listed: readBoolean(fields, "listed") ?? true,
+      regulated: readBoolean(fields, "regulated") ?? true
+    };
+  } else if (assetClass === "COLLECTIVE_INVESTMENT") {
+    next.collective_investment = {
+      identification_key:
+        (readString(fields, "identification_key") as "1" | "2" | null) ??
+        (readString(fields, "clave_identificacion") as "1" | "2" | null) ??
+        (readString(fields, "isin") ? "1" : "2"),
+      security_identifier:
+        readString(fields, "security_identifier") ??
+        readString(fields, "identificacion_valores") ??
+        readString(fields, "isin") ??
+        readString(fields, "description"),
+      entity_tax_id: readString(fields, "entity_tax_id") ?? readString(fields, "nif_entidad_pais"),
+      representation_key:
+        (readString(fields, "representation_key") as "A" | "B" | null) ??
+        (readString(fields, "clave_representacion") as "A" | "B" | null) ??
+        "A",
+      units: readNumber(fields, "quantity") ?? readNumber(fields, "numero_valores"),
+      listed: readBoolean(fields, "listed") ?? true,
+      regulated: readBoolean(fields, "regulated") ?? true
+    };
+  } else if (assetClass === "INSURANCE") {
+    next.insurance = {
+      insurance_kind:
+        (readString(fields, "insurance_kind") as CanonicalAssetRecord["insurance"] extends { insurance_kind?: infer T } ? T : never) ??
+        "LIFE",
+      entity_tax_id: readString(fields, "entity_tax_id") ?? readString(fields, "nif_entidad_pais")
+    };
+  } else if (assetClass === "REAL_ESTATE") {
+    next.real_estate = {
+      real_estate_type_key:
+        (readString(fields, "real_estate_type_key") as "U" | "R" | null) ??
+        (readString(fields, "clave_tipo_inmueble") as "U" | "R" | null) ??
+        "U",
+      real_right_description:
+        readString(fields, "real_right_description") ??
+        readString(fields, "tipo_derecho_real"),
+      cadastral_reference:
+        readString(fields, "cadastral_reference") ??
+        readString(fields, "referencia_catastral")
+    };
+  } else if (assetClass === "MOVABLE_ASSET") {
+    next.movable = {
+      movable_kind:
+        (readString(fields, "movable_kind") as CanonicalAssetRecord["movable"] extends { movable_kind?: infer T } ? T : never) ??
+        "OTHER",
+      registry_reference:
+        readString(fields, "registry_reference") ??
+        readString(fields, "referencia_registro"),
+      valuation_method:
+        readString(fields, "valuation_method") ??
+        readString(fields, "metodo_valoracion")
+    };
+  }
+
+  next.asset_link_key = normalizeAssetLinkKey(readString(fields, "asset_link_key")) ?? buildAssetLinkKey(next);
+  return next;
+}
+
+function deriveImplicitAssetFromEventRecord(
+  record: ParsedRecord | Record<string, unknown>
+): CanonicalAssetRecord | null {
+  const recordType = String((record as Record<string, unknown>).record_type ?? "") as ParsedRecord["record_type"];
+  if (!explicitFiscalEventRecordTypes.has(recordType)) {
+    return null;
+  }
+
+  const fields = isObject((record as Record<string, unknown>).fields)
+    ? ((record as Record<string, unknown>).fields as JsonObject)
+    : {};
+
+  if (!readString(fields, "isin") && !readString(fields, "security_identifier") && !readString(fields, "description")) {
+    return null;
+  }
+
+  const countryCode = normalizeCountryCode(
+    readString(fields, "country_code") ?? readString(fields, "codigo_pais")
+  );
+  const locationKey = normalizeLocationKey(
+    readString(fields, "location_key") ?? readString(fields, "clave_situacion"),
+    countryCode
+  );
+  const assetClass: AssetClass =
+    recordType === "INTERES" && readString(fields, "account_code") ? "ACCOUNT" : "SECURITY";
+
+  const asset: CanonicalAssetRecord = {
+    asset_class: assetClass,
+    condition_key: "1",
+    asset_key: assetClass === "ACCOUNT" ? "C" : "V",
+    asset_subkey: assetClass === "ACCOUNT" ? "5" : "1",
+    country_code: countryCode,
+    location_key: locationKey,
+    incorporation_date: normalizeDate(
+      readString(fields, "incorporation_date") ?? readString(fields, "operation_date")
+    ),
+    origin_key: "A",
+    valuation_1_eur: readNumber(fields, "amount") ?? 0,
+    ownership_percentage: 100,
+    entity_name: readString(fields, "entity_name"),
+    asset_description: readString(fields, "description"),
+    currency: readString(fields, "currency"),
+    tax_territory_code: readString(fields, "tax_territory_code") ?? "ES-COMUN",
+    metadata: {
+      source_record_type: recordType,
+      inferred_from_event: true
+    }
+  };
+
+  if (assetClass === "ACCOUNT") {
+    asset.account = {
+      account_identification_key: "O",
+      bic: readString(fields, "bic"),
+      account_code: readString(fields, "account_code"),
+      entity_tax_id: readString(fields, "entity_tax_id")
+    };
+  } else {
+    asset.security = {
+      identification_key: readString(fields, "isin") ? "1" : "2",
+      security_identifier:
+        readString(fields, "security_identifier") ??
+        readString(fields, "isin") ??
+        readString(fields, "description"),
+      entity_tax_id: readString(fields, "entity_tax_id"),
+      representation_key: "A",
+      units: readNumber(fields, "quantity"),
+      listed: true,
+      regulated: true
+    };
+  }
+
+  asset.asset_link_key = buildAssetLinkKey(asset);
+  return asset;
+}
+
+function eventTypeFromRecordType(recordType: ParsedRecord["record_type"]): CanonicalFiscalEvent["event_type"] | null {
+  switch (recordType) {
+    case "COMPRA":
+      return "ACQUISITION";
+    case "VENTA":
+      return "DISPOSAL";
+    case "DIVIDENDO":
+      return "DIVIDEND";
+    case "INTERES":
+      return "INTEREST";
+    case "RENTA":
+      return "RENT";
+    case "RETENCION":
+      return "WITHHOLDING";
+    default:
+      return null;
+  }
+}
+
+function deriveFiscalEventFromRecord(
+  record: ParsedRecord | Record<string, unknown>,
+  assetLinkKey: string | null
+): CanonicalFiscalEvent | null {
+  const recordType = String((record as Record<string, unknown>).record_type ?? "") as ParsedRecord["record_type"];
+  const eventType = eventTypeFromRecordType(recordType);
+  if (!eventType) {
+    return null;
+  }
+
+  const fields = isObject((record as Record<string, unknown>).fields)
+    ? ((record as Record<string, unknown>).fields as JsonObject)
+    : {};
+  const amount = readNumber(fields, "amount");
+  const retention = readNumber(fields, "retention");
+
+  return {
+    asset_link_key: assetLinkKey,
+    event_type: eventType,
+    event_date: normalizeDate(
+      readString(fields, "event_date") ??
+        readString(fields, "operation_date") ??
+        readString(fields, "incorporation_date")
+    ),
+    quantity: readNumber(fields, "quantity"),
+    gross_amount_eur: eventType === "WITHHOLDING" ? null : amount,
+    net_amount_eur:
+      amount !== null && retention !== null && eventType !== "WITHHOLDING" ? amount - retention : amount,
+    withholding_amount_eur:
+      eventType === "WITHHOLDING" ? amount : retention,
+    proceeds_amount_eur: eventType === "DISPOSAL" ? amount : null,
+    cost_basis_amount_eur: readNumber(fields, "cost_basis_amount_eur"),
+    realized_result_eur:
+      readNumber(fields, "realized_result_eur") ??
+      readNumber(fields, "realized_gain"),
+    currency: readString(fields, "currency"),
+    notes: readString(fields, "description")
+  };
+}
+
+function normalizeCanonicalAssetRecord(value: unknown): CanonicalAssetRecord | null {
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const countryCode = normalizeCountryCode(
+    readString(value, "country_code") ?? readString(value, "codigo_pais")
+  );
+  const assetClass = readString(value, "asset_class") as AssetClass | null;
+  if (!assetClass) {
+    return null;
+  }
+
+  const asset: CanonicalAssetRecord = {
+    asset_link_key: normalizeAssetLinkKey(readString(value, "asset_link_key")),
+    asset_class: assetClass,
+    condition_key: (readString(value, "condition_key") as CanonicalAssetRecord["condition_key"] | null) ?? "1",
+    asset_key:
+      (readString(value, "asset_key") as CanonicalAssetRecord["asset_key"] | null) ?? defaultAssetKey(assetClass),
+    asset_subkey: readString(value, "asset_subkey") ?? defaultAssetSubkey(assetClass, value),
+    country_code: countryCode,
+    location_key: normalizeLocationKey(readString(value, "location_key"), countryCode),
+    incorporation_date: normalizeDate(readString(value, "incorporation_date")),
+    origin_key: (readString(value, "origin_key") as CanonicalAssetRecord["origin_key"] | null) ?? "A",
+    valuation_1_eur: readNumber(value, "valuation_1_eur") ?? 0,
+    valuation_2_eur: readNumber(value, "valuation_2_eur"),
+    ownership_percentage: readNumber(value, "ownership_percentage") ?? 100,
+    currency: readString(value, "currency"),
+    entity_name: readString(value, "entity_name"),
+    asset_description: readString(value, "asset_description"),
+    tax_territory_code: readString(value, "tax_territory_code") ?? "ES-COMUN",
+    ownership_type_description: readString(value, "ownership_type_description"),
+    extinction_date: readString(value, "extinction_date"),
+    metadata: isObject(value.metadata) ? value.metadata : {}
+  };
+
+  asset.asset_link_key = asset.asset_link_key ?? buildAssetLinkKey(asset);
+  return asset;
+}
+
+function normalizeCanonicalFiscalEvent(value: unknown): CanonicalFiscalEvent | null {
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const eventType = readString(value, "event_type") as CanonicalFiscalEvent["event_type"] | null;
+  if (!eventType) {
+    return null;
+  }
+
+  return {
+    asset_link_key: normalizeAssetLinkKey(readString(value, "asset_link_key")),
+    event_type: eventType,
+    event_date: normalizeDate(readString(value, "event_date")),
+    asset_id: readString(value, "asset_id"),
+    quantity: readNumber(value, "quantity"),
+    gross_amount_eur: readNumber(value, "gross_amount_eur"),
+    net_amount_eur: readNumber(value, "net_amount_eur"),
+    withholding_amount_eur: readNumber(value, "withholding_amount_eur"),
+    proceeds_amount_eur: readNumber(value, "proceeds_amount_eur"),
+    cost_basis_amount_eur: readNumber(value, "cost_basis_amount_eur"),
+    realized_result_eur: readNumber(value, "realized_result_eur"),
+    currency: readString(value, "currency"),
+    notes: readString(value, "notes")
+  };
+}
+
+function eventDedupKey(event: CanonicalFiscalEvent): string {
+  return [
+    event.event_type,
+    event.event_date,
+    event.asset_link_key ?? "",
+    event.quantity ?? "",
+    event.gross_amount_eur ?? "",
+    event.withholding_amount_eur ?? "",
+    event.realized_result_eur ?? ""
+  ].join("|");
+}
+
+export function deriveCanonicalRegistryFromParsePayload(input: {
+  records: Array<ParsedRecord | Record<string, unknown>>;
+  assetRecords?: unknown;
+  fiscalEvents?: unknown;
+}): {
+  assetRecords: CanonicalAssetRecord[];
+  fiscalEvents: CanonicalFiscalEvent[];
+} {
+  const assetsByKey = new Map<string, CanonicalAssetRecord>();
+
+  if (Array.isArray(input.assetRecords)) {
+    for (const item of input.assetRecords) {
+      const asset = normalizeCanonicalAssetRecord(item);
+      if (!asset) {
+        continue;
+      }
+
+      const key = asset.asset_link_key ?? buildAssetLinkKey(asset);
+      asset.asset_link_key = key;
+      assetsByKey.set(key, asset);
+    }
+  }
+
+  const derivedEvents: CanonicalFiscalEvent[] = [];
+  const derivedEventKeys = new Set<string>();
+
+  for (const record of input.records) {
+    const explicitAsset = deriveImplicitAssetFromRecord(record) ?? deriveImplicitAssetFromEventRecord(record);
+    if (explicitAsset) {
+      const key = explicitAsset.asset_link_key ?? buildAssetLinkKey(explicitAsset);
+      explicitAsset.asset_link_key = key;
+      if (!assetsByKey.has(key)) {
+        assetsByKey.set(key, explicitAsset);
+      }
+    }
+
+    const event = deriveFiscalEventFromRecord(record, explicitAsset?.asset_link_key ?? null);
+    if (event) {
+      const key = eventDedupKey(event);
+      if (!derivedEventKeys.has(key)) {
+        derivedEventKeys.add(key);
+        derivedEvents.push(event);
+      }
+    }
+  }
+
+  const fiscalEvents: CanonicalFiscalEvent[] = [];
+  const seenEventKeys = new Set<string>();
+
+  if (Array.isArray(input.fiscalEvents)) {
+    for (const item of input.fiscalEvents) {
+      const event = normalizeCanonicalFiscalEvent(item);
+      if (!event) {
+        continue;
+      }
+
+      const key = eventDedupKey(event);
+      if (seenEventKeys.has(key)) {
+        continue;
+      }
+      seenEventKeys.add(key);
+      fiscalEvents.push(event);
+    }
+  }
+
+  for (const event of derivedEvents) {
+    const key = eventDedupKey(event);
+    if (seenEventKeys.has(key)) {
+      continue;
+    }
+    seenEventKeys.add(key);
+    fiscalEvents.push(event);
+  }
+
+  return {
+    assetRecords: Array.from(assetsByKey.values()),
+    fiscalEvents
+  };
+}
+
+function isMissingRelation(errorMessage: string | undefined): boolean {
+  return Boolean(errorMessage && /does not exist|relation .* does not exist/i.test(errorMessage));
+}
+
+async function ensureDeclarationProfile(
+  supabase: SupabaseClient,
+  expedienteId: string
+): Promise<string | null> {
+  const existing = await supabase
+    .from(dbTables.declarationProfiles)
+    .select("id")
+    .eq("expediente_id", expedienteId)
+    .maybeSingle();
+
+  if (existing.error) {
+    if (isMissingRelation(existing.error.message)) {
+      return null;
+    }
+    throw new Error(`No se pudo cargar declaration profile: ${existing.error.message}`);
+  }
+
+  if (existing.data?.id) {
+    return existing.data.id as string;
+  }
+
+  const expedienteResult = await supabase
+    .from(dbTables.expedientes)
+    .select("id, client_id, fiscal_year, title")
+    .eq("id", expedienteId)
+    .single();
+
+  if (expedienteResult.error || !expedienteResult.data) {
+    throw new Error(
+      `No se pudo cargar expediente para declaration profile: ${expedienteResult.error?.message ?? "desconocido"}`
+    );
+  }
+
+  const expediente = expedienteResult.data as {
+    id: string;
+    client_id: string | null;
+    fiscal_year: number;
+    title: string;
+  };
+
+  let client: { nif: string | null; display_name: string | null } | null = null;
+  if (expediente.client_id) {
+    const clientResult = await supabase
+      .from(dbTables.clients)
+      .select("nif, display_name")
+      .eq("id", expediente.client_id)
+      .maybeSingle();
+
+    if (clientResult.error && !isMissingRelation(clientResult.error.message)) {
+      throw new Error(`No se pudo cargar cliente para declaration profile: ${clientResult.error.message}`);
+    }
+
+    client = (clientResult.data as { nif: string | null; display_name: string | null } | null) ?? null;
+  }
+
+  const profileId = crypto.randomUUID();
+  const insertResult = await supabase.from(dbTables.declarationProfiles).insert({
+    id: profileId,
+    expediente_id: expediente.id,
+    client_id: expediente.client_id,
+    fiscal_year: expediente.fiscal_year,
+    declarant_nif: client?.nif ?? "00000000T",
+    declared_nif: client?.nif ?? "00000000T",
+    declared_name: client?.display_name ?? expediente.title,
+    residence_country_code: "ES",
+    residence_territory_code: "ES-COMUN",
+    default_asset_location_key: "ES"
+  });
+
+  if (insertResult.error) {
+    throw new Error(`No se pudo crear declaration profile: ${insertResult.error.message}`);
+  }
+
+  return profileId;
+}
+
+export async function replaceDocumentCanonicalRegistry(
+  supabase: SupabaseClient,
+  input: {
+    expedienteId: string;
+    documentId: string;
+    records: Array<ParsedRecord | Record<string, unknown>>;
+    assetRecords?: unknown;
+    fiscalEvents?: unknown;
+    source: CanonicalSource;
+    reviewedBy?: string | null;
+    manualNotes?: string | null;
+  }
+): Promise<{
+  canonicalAvailable: boolean;
+  assetsSaved: number;
+  fiscalEventsSaved: number;
+}> {
+  const declarationProfileId = await ensureDeclarationProfile(supabase, input.expedienteId);
+  if (!declarationProfileId) {
+    return {
+      canonicalAvailable: false,
+      assetsSaved: 0,
+      fiscalEventsSaved: 0
+    };
+  }
+
+  const canonical = deriveCanonicalRegistryFromParsePayload({
+    records: input.records,
+    assetRecords: input.assetRecords,
+    fiscalEvents: input.fiscalEvents
+  });
+
+  const existingAssetsResult = await supabase
+    .from(dbTables.assetRegistry)
+    .select("id")
+    .eq("expediente_id", input.expedienteId)
+    .contains("metadata", { source_document_id: input.documentId });
+
+  if (existingAssetsResult.error) {
+    if (isMissingRelation(existingAssetsResult.error.message)) {
+      return {
+        canonicalAvailable: false,
+        assetsSaved: 0,
+        fiscalEventsSaved: 0
+      };
+    }
+
+    throw new Error(`No se pudo localizar activos previos del documento: ${existingAssetsResult.error.message}`);
+  }
+
+  const existingAssetIds = ((existingAssetsResult.data ?? []) as Array<{ id: string }>).map((row) => row.id);
+
+  const deleteEventsResult = await supabase
+    .from(dbTables.assetFiscalEvents)
+    .delete()
+    .eq("document_id", input.documentId);
+
+  if (deleteEventsResult.error && !isMissingRelation(deleteEventsResult.error.message)) {
+    throw new Error(`No se pudieron limpiar eventos fiscales previos: ${deleteEventsResult.error.message}`);
+  }
+
+  if (existingAssetIds.length > 0) {
+    const deleteAssetsResult = await supabase
+      .from(dbTables.assetRegistry)
+      .delete()
+      .in("id", existingAssetIds);
+
+    if (deleteAssetsResult.error) {
+      throw new Error(`No se pudieron limpiar activos previos: ${deleteAssetsResult.error.message}`);
+    }
+  }
+
+  const assetsToInsert = canonical.assetRecords.map((asset) => {
+    const assetId = crypto.randomUUID();
+    return {
+      id: assetId,
+      asset,
+      row: {
+        id: assetId,
+        expediente_id: input.expedienteId,
+        declaration_profile_id: declarationProfileId,
+        client_id: null,
+        asset_class: asset.asset_class,
+        clave_condicion: asset.condition_key,
+        tipo_titularidad: asset.ownership_type_description ?? null,
+        clave_tipo_bien: asset.asset_key,
+        subclave: asset.asset_subkey,
+        codigo_pais: asset.country_code,
+        codigo_territorio: asset.tax_territory_code ?? "ES-COMUN",
+        clave_situacion: asset.location_key,
+        fecha_incorporacion: asset.incorporation_date,
+        clave_origen: asset.origin_key,
+        fecha_extincion: asset.extinction_date ?? null,
+        valoracion_1_eur: asset.valuation_1_eur,
+        valoracion_2_eur: asset.valuation_2_eur ?? null,
+        porcentaje_participacion: asset.ownership_percentage,
+        currency: asset.currency ?? null,
+        denominacion_entidad: asset.entity_name ?? null,
+        descripcion_activo: asset.asset_description ?? null,
+        domicilio_via: asset.address?.street_line ?? null,
+        domicilio_complemento: asset.address?.complement ?? null,
+        domicilio_poblacion: asset.address?.city ?? null,
+        domicilio_region: asset.address?.region ?? null,
+        domicilio_codigo_postal: asset.address?.postal_code ?? null,
+        domicilio_pais: asset.address?.country_code ?? null,
+        created_by: input.reviewedBy ?? null,
+        updated_by: input.reviewedBy ?? null,
+        metadata: {
+          ...(asset.metadata ?? {}),
+          source_document_id: input.documentId,
+          source_mode: input.source,
+          asset_link_key: asset.asset_link_key ?? buildAssetLinkKey(asset),
+          manual_notes: input.manualNotes ?? null
+        }
+      }
+    };
+  });
+
+  if (assetsToInsert.length > 0) {
+    const insertAssetsResult = await supabase
+      .from(dbTables.assetRegistry)
+      .insert(assetsToInsert.map((item) => item.row));
+
+    if (insertAssetsResult.error) {
+      throw new Error(`No se pudieron persistir activos canonicos: ${insertAssetsResult.error.message}`);
+    }
+  }
+
+  const assetIdsByKey = new Map<string, string>();
+  for (const item of assetsToInsert) {
+    assetIdsByKey.set(
+      (item.asset.asset_link_key ?? buildAssetLinkKey(item.asset)),
+      item.id
+    );
+  }
+
+  const accountRows = assetsToInsert.flatMap((item) => {
+    if (!item.asset.account?.account_code) {
+      return [];
+    }
+
+    return [
+      {
+        asset_id: item.id,
+        clave_identif_cuenta: item.asset.account.account_identification_key ?? "O",
+        codigo_bic: item.asset.account.bic ?? null,
+        codigo_cuenta: item.asset.account.account_code,
+        nif_entidad_pais: item.asset.account.entity_tax_id ?? null
+      }
+    ];
+  });
+
+  const securityRows = assetsToInsert.flatMap((item) => {
+    if (!item.asset.security?.security_identifier) {
+      return [];
+    }
+
+    return [
+      {
+        asset_id: item.id,
+        clave_identificacion: item.asset.security.identification_key ?? "2",
+        identificacion_valores: item.asset.security.security_identifier,
+        nif_entidad_pais: item.asset.security.entity_tax_id ?? null,
+        clave_representacion: item.asset.security.representation_key ?? "A",
+        numero_valores: item.asset.security.units ?? 0,
+        is_listed: item.asset.security.listed ?? true,
+        is_regulated: item.asset.security.regulated ?? true
+      }
+    ];
+  });
+
+  const collectiveInvestmentRows = assetsToInsert.flatMap((item) => {
+    if (!item.asset.collective_investment?.security_identifier) {
+      return [];
+    }
+
+    return [
+      {
+        asset_id: item.id,
+        clave_identificacion: item.asset.collective_investment.identification_key ?? "2",
+        identificacion_valores: item.asset.collective_investment.security_identifier,
+        nif_entidad_pais: item.asset.collective_investment.entity_tax_id ?? null,
+        clave_representacion: item.asset.collective_investment.representation_key ?? "A",
+        numero_valores: item.asset.collective_investment.units ?? 0,
+        is_regulated: item.asset.collective_investment.regulated ?? true
+      }
+    ];
+  });
+
+  const insuranceRows = assetsToInsert.flatMap((item) => {
+    if (!item.asset.insurance?.insurance_kind) {
+      return [];
+    }
+
+    return [
+      {
+        asset_id: item.id,
+        insurance_kind: item.asset.insurance.insurance_kind,
+        nif_entidad_pais: item.asset.insurance.entity_tax_id ?? null
+      }
+    ];
+  });
+
+  const realEstateRows = assetsToInsert.flatMap((item) => {
+    if (!item.asset.real_estate?.real_estate_type_key) {
+      return [];
+    }
+
+    return [
+      {
+        asset_id: item.id,
+        clave_tipo_inmueble: item.asset.real_estate.real_estate_type_key,
+        referencia_catastral: item.asset.real_estate.cadastral_reference ?? null
+      }
+    ];
+  });
+
+  const movableRows = assetsToInsert.flatMap((item) => {
+    if (!item.asset.movable?.movable_kind) {
+      return [];
+    }
+
+    return [
+      {
+        asset_id: item.id,
+        clave_tipo_bien_mueble: item.asset.movable.movable_kind,
+        referencia_registro: item.asset.movable.registry_reference ?? null,
+        metodo_valoracion: item.asset.movable.valuation_method ?? null
+      }
+    ];
+  });
+
+  const subtypeBatches: Array<{ table: string; rows: Array<Record<string, unknown>> }> = [
+    { table: dbTables.assetAccounts, rows: accountRows },
+    { table: dbTables.assetSecurities, rows: securityRows },
+    { table: dbTables.assetCollectiveInvestments, rows: collectiveInvestmentRows },
+    { table: dbTables.assetInsurances, rows: insuranceRows },
+    { table: dbTables.assetRealEstate, rows: realEstateRows },
+    { table: dbTables.assetMovableGoods, rows: movableRows }
+  ];
+
+  for (const batch of subtypeBatches) {
+    if (batch.rows.length === 0) {
+      continue;
+    }
+
+    const result = await supabase.from(batch.table).insert(batch.rows);
+    if (result.error) {
+      throw new Error(`No se pudieron persistir detalles de ${batch.table}: ${result.error.message}`);
+    }
+  }
+
+  const eventRows = canonical.fiscalEvents.map((event) => ({
+    id: crypto.randomUUID(),
+    expediente_id: input.expedienteId,
+    asset_id: event.asset_link_key ? assetIdsByKey.get(event.asset_link_key) ?? null : null,
+    document_id: input.documentId,
+    event_type: event.event_type,
+    event_date: event.event_date,
+    quantity: event.quantity ?? null,
+    gross_amount_eur: event.gross_amount_eur ?? null,
+    net_amount_eur: event.net_amount_eur ?? null,
+    withholding_amount_eur: event.withholding_amount_eur ?? null,
+    proceeds_amount_eur: event.proceeds_amount_eur ?? null,
+    cost_basis_amount_eur: event.cost_basis_amount_eur ?? null,
+    realized_result_eur: event.realized_result_eur ?? null,
+    currency: event.currency ?? null,
+    source: input.source,
+    origin_trace: {
+      asset_link_key: event.asset_link_key ?? null,
+      source_document_id: input.documentId,
+      reviewed_by: input.reviewedBy ?? null
+    },
+    notes: event.notes ?? input.manualNotes ?? null
+  }));
+
+  if (eventRows.length > 0) {
+    const insertEventsResult = await supabase.from(dbTables.assetFiscalEvents).insert(eventRows);
+    if (insertEventsResult.error) {
+      throw new Error(`No se pudieron persistir eventos fiscales canonicos: ${insertEventsResult.error.message}`);
+    }
+  }
+
+  return {
+    canonicalAvailable: true,
+    assetsSaved: assetsToInsert.length,
+    fiscalEventsSaved: eventRows.length
+  };
+}

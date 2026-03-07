@@ -72,6 +72,10 @@ export interface ParsedRecord {
 }
 
 export interface CanonicalAssetRecord {
+  asset_link_key?: string | null;
+  expediente_id?: string;
+  declaration_profile_id?: string | null;
+  client_id?: string | null;
   asset_class:
     | "ACCOUNT"
     | "SECURITY"
@@ -84,17 +88,68 @@ export interface CanonicalAssetRecord {
   asset_subkey: string;
   country_code: string;
   location_key: "ES" | "EX";
+  tax_territory_code?: string | null;
   incorporation_date: string;
   origin_key: "A" | "M" | "C";
+  extinction_date?: string | null;
   valuation_1_eur: number;
   valuation_2_eur?: number | null;
   ownership_percentage: number;
+  currency?: string | null;
+  ownership_type_description?: string | null;
   entity_name?: string | null;
   asset_description?: string | null;
+  address?: {
+    street_line?: string | null;
+    complement?: string | null;
+    city?: string | null;
+    region?: string | null;
+    postal_code?: string | null;
+    country_code?: string | null;
+  } | null;
+  account?: {
+    account_identification_key?: "I" | "O" | null;
+    bic?: string | null;
+    account_code?: string | null;
+    entity_tax_id?: string | null;
+  } | null;
+  security?: {
+    identification_key?: "1" | "2" | null;
+    security_identifier?: string | null;
+    entity_tax_id?: string | null;
+    representation_key?: "A" | "B" | null;
+    units?: number | null;
+    listed?: boolean | null;
+    regulated?: boolean | null;
+  } | null;
+  collective_investment?: {
+    identification_key?: "1" | "2" | null;
+    security_identifier?: string | null;
+    entity_tax_id?: string | null;
+    representation_key?: "A" | "B" | null;
+    units?: number | null;
+    listed?: boolean | null;
+    regulated?: boolean | null;
+  } | null;
+  insurance?: {
+    insurance_kind?: "LIFE" | "DISABILITY" | "TEMPORARY_ANNUITY" | "LIFETIME_ANNUITY" | null;
+    entity_tax_id?: string | null;
+  } | null;
+  real_estate?: {
+    real_estate_type_key?: "U" | "R" | null;
+    real_right_description?: string | null;
+    cadastral_reference?: string | null;
+  } | null;
+  movable?: {
+    movable_kind?: "GENERAL" | "ART" | "JEWELRY" | "VEHICLE" | "BOAT" | "AIRCRAFT" | "COLLECTION" | "OTHER" | null;
+    registry_reference?: string | null;
+    valuation_method?: string | null;
+  } | null;
   metadata?: Record<string, unknown>;
 }
 
 export interface CanonicalFiscalEvent {
+  asset_link_key?: string | null;
   event_type:
     | "ACQUISITION"
     | "DISPOSAL"

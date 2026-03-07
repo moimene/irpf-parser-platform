@@ -219,6 +219,8 @@ Siguiente foco del track:
 - `apps/web/lib/contracts.ts`, `packages/contracts/src/index.ts` y `services/parser/app/schemas.py` abren el contrato de parseo para `asset_records` y `fiscal_events`.
 - `apps/web/app/api/exports/[expediente_id]/route.ts` y `/download` ya quedan preparados para leer `714` y `720` desde `irpf_asset_registry` cuando exista informacion canonica, manteniendo fallback temporal a `irpf_operations`.
 - `apps/web/lib/aeat/format.ts` añade generadores `generateModel714FromAssets` y `generateModel720FromAssets` para que el export AEAT deje de ser solo una serializacion de operaciones.
+- `services/parser/app/parser_engine.py` emite ya `asset_records` y `fiscal_events` derivados.
+- `apps/web/app/api/documents/intake/route.ts` y `apps/web/app/api/review/[extraction_id]/route.ts` persisten esa proyeccion canonica al aceptar el documento, manteniendo en paralelo `irpf_operations`.
 
 ### Track 5. Administracion y trazabilidad
 
