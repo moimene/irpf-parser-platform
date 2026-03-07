@@ -6,6 +6,7 @@ import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
 import {
   buildTradeEventsFromFiscalRuntime,
+  detectBlockedLossesFromFiscalRuntime,
   summarizeSalesFromOperations,
   type PersistedSaleAllocationRow,
   type RuntimeOperationRow
@@ -42,6 +43,7 @@ async function loadModel100Runtime(
 ): Promise<{
   trades: ReturnType<typeof buildTradeEventsFromFiscalRuntime>;
   saleSummaries: ReturnType<typeof summarizeSalesFromOperations>;
+  blockedLosses: ReturnType<typeof detectBlockedLossesFromFiscalRuntime>;
 }> {
   const [operationsResult, allocationsResult] = await Promise.all([
     supabase
@@ -76,6 +78,10 @@ async function loadModel100Runtime(
 
   return {
     saleSummaries,
+    blockedLosses: detectBlockedLossesFromFiscalRuntime({
+      operations: operations as RuntimeOperationRow[],
+      saleSummaries
+    }),
     trades: buildTradeEventsFromFiscalRuntime({
       operations: operations as RuntimeOperationRow[],
       saleSummaries
@@ -172,6 +178,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       artifact_hash: artifactHash,
       generated_at: generatedAt,
       messages: validation.messages,
+      blocked_losses: model100Runtime?.blockedLosses ?? [],
       current_user: {
         reference: sessionUser.reference,
         display_name: sessionUser.display_name,
@@ -195,6 +202,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
         messages: validation.messages,
         trades_count: model100Runtime?.trades.length ?? 0,
         sales_count: model100Runtime?.saleSummaries.length ?? 0,
+        blocked_losses: model100Runtime?.blockedLosses ?? [],
         expediente_reference: resolvedExpediente.reference
       }
     });

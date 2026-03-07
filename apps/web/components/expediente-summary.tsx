@@ -83,6 +83,24 @@ type ExpedienteSaleSummary = {
   source: string;
 };
 
+type ExpedienteBlockedLoss = {
+  sale_operation_id: string;
+  blocked_by_buy_operation_id: string;
+  isin: string;
+  sale_date: string;
+  blocked_by_buy_date: string;
+  window_months: number;
+  sale_quantity: number;
+  blocked_by_buy_quantity: number;
+  realized_loss: number | null;
+  currency: string | null;
+  reason: string;
+  sale_description: string | null;
+  blocked_by_buy_description: string | null;
+  sale_source: string;
+  blocked_by_buy_source: string;
+};
+
 type ExpedientePayload = {
   expediente_id: string;
   expediente_reference: string;
@@ -109,11 +127,13 @@ type ExpedientePayload = {
     lots_closed: number;
     sales_matched: number;
     sales_pending: number;
+    blocked_losses: number;
   };
   documents: ExpedienteDocument[];
   operations: ExpedienteOperation[];
   lots: ExpedienteLot[];
   sale_summaries: ExpedienteSaleSummary[];
+  blocked_losses: ExpedienteBlockedLoss[];
   exports: ExpedienteExport[];
 };
 
@@ -137,12 +157,14 @@ const emptyState: ExpedientePayload = {
     lots_open: 0,
     lots_closed: 0,
     sales_matched: 0,
-    sales_pending: 0
+    sales_pending: 0,
+    blocked_losses: 0
   },
   documents: [],
   operations: [],
   lots: [],
   sale_summaries: [],
+  blocked_losses: [],
   exports: []
 };
 
@@ -291,6 +313,10 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
             <span>Ventas pendientes</span>
             <strong>{payload.counts.sales_pending}</strong>
           </article>
+          <article className="kpi">
+            <span>Pérdidas bloqueadas</span>
+            <strong>{payload.counts.blocked_losses}</strong>
+          </article>
         </div>
         {error ? <p className="badge danger" style={{ marginTop: "12px" }}>{error}</p> : null}
       </section>
@@ -412,6 +438,64 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                       <span className={badgeClass(sale.status)}>{sale.status}</span>
                       <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
                         {sale.source}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Pérdidas bloqueadas por recompra</h2>
+        {payload.blocked_losses.length === 0 ? (
+          <p className="muted">
+            No se han detectado ventas con pérdida bloqueada en la ventana 2/12 meses para este expediente.
+          </p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Venta</th>
+                  <th>Recompra bloqueante</th>
+                  <th>Pérdida</th>
+                  <th>Regla</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.blocked_losses.map((blockedLoss) => (
+                  <tr key={`${blockedLoss.sale_operation_id}-${blockedLoss.blocked_by_buy_operation_id}`}>
+                    <td>
+                      <div>{new Date(blockedLoss.sale_date).toLocaleDateString("es-ES")}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        <strong>{blockedLoss.isin}</strong> · {formatNumber(blockedLoss.sale_quantity)} títulos
+                      </div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {blockedLoss.sale_description ?? "Venta sin descripción"} · {blockedLoss.sale_source}
+                      </div>
+                    </td>
+                    <td>
+                      <div>{new Date(blockedLoss.blocked_by_buy_date).toLocaleDateString("es-ES")}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {formatNumber(blockedLoss.blocked_by_buy_quantity)} títulos · {blockedLoss.blocked_by_buy_source}
+                      </div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {blockedLoss.blocked_by_buy_description ?? "Compra sin descripción"}
+                      </div>
+                    </td>
+                    <td>
+                      <div>{formatCurrency(blockedLoss.realized_loss, blockedLoss.currency)}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        Pendiente de integración fiscal en el modelo 100
+                      </div>
+                    </td>
+                    <td>
+                      <span className="badge warning">{blockedLoss.window_months} meses</span>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {blockedLoss.reason}
                       </div>
                     </td>
                   </tr>

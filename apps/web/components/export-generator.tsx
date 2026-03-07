@@ -14,7 +14,36 @@ type ExportResult = {
  artifact_hash: string;
  generated_at: string;
  messages: string[];
+ blocked_losses?: Array<{
+ sale_operation_id: string;
+ blocked_by_buy_operation_id: string;
+ isin: string;
+ sale_date: string;
+ blocked_by_buy_date: string;
+ window_months: number;
+ realized_loss: number | null;
+ currency: string | null;
+ }>;
 };
+
+function formatCurrency(value: number | null, currency: string | null | undefined): string {
+ if (value === null) {
+ return "-";
+ }
+
+ const resolvedCurrency = currency?.trim().toUpperCase() || "EUR";
+
+ try {
+ return new Intl.NumberFormat("es-ES", {
+ style: "currency",
+ currency: resolvedCurrency,
+ minimumFractionDigits: 2,
+ maximumFractionDigits: 2
+ }).format(value);
+ } catch {
+ return `${value.toFixed(2)} ${resolvedCurrency}`;
+ }
+}
 
 export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  const [model, setModel] = useState<"100" | "714" | "720">("100");
@@ -157,6 +186,35 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  ))}
  </ul>
  )}
+ {result.blocked_losses && result.blocked_losses.length > 0 ? (
+ <div style={{ marginTop: "12px" }}>
+ <p className="muted" style={{ marginBottom: "8px" }}>
+ Trazabilidad de pérdidas bloqueadas detectadas:
+ </p>
+ <div className="table-wrap">
+ <table>
+ <thead>
+ <tr>
+ <th>Venta</th>
+ <th>Recompra</th>
+ <th>Pérdida</th>
+ <th>Regla</th>
+ </tr>
+ </thead>
+ <tbody>
+ {result.blocked_losses.map((blockedLoss) => (
+ <tr key={`${blockedLoss.sale_operation_id}-${blockedLoss.blocked_by_buy_operation_id}`}>
+ <td>{new Date(blockedLoss.sale_date).toLocaleDateString("es-ES")} · {blockedLoss.isin}</td>
+ <td>{new Date(blockedLoss.blocked_by_buy_date).toLocaleDateString("es-ES")}</td>
+ <td>{formatCurrency(blockedLoss.realized_loss, blockedLoss.currency)}</td>
+ <td>{blockedLoss.window_months} meses</td>
+ </tr>
+ ))}
+ </tbody>
+ </table>
+ </div>
+ </div>
+ ) : null}
  {result?.validation_state === "errors" ? (
  <p className="muted" style={{ marginTop: "8px" }}>
  Corrige los errores de validación antes de descargar el fichero AEAT.

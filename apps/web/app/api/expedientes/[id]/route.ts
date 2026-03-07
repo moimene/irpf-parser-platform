@@ -3,7 +3,12 @@ import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurre
 import { findClientCompat } from "@/lib/client-store";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
-import { summarizeSalesFromOperations, type PersistedSaleAllocationRow, type RuntimeOperationRow } from "@/lib/lots";
+import {
+  detectBlockedLossesFromFiscalRuntime,
+  summarizeSalesFromOperations,
+  type PersistedSaleAllocationRow,
+  type RuntimeOperationRow
+} from "@/lib/lots";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -88,6 +93,8 @@ type LotRow = {
   metadata: JsonObject | null;
   created_at: string;
 };
+
+type BlockedLossRow = ReturnType<typeof detectBlockedLossesFromFiscalRuntime>[number];
 
 type ExpedienteRow = {
   id: string;
@@ -333,6 +340,26 @@ export async function GET(
       status: summary.status,
       source: summary.source
     }));
+    const blockedLosses = detectBlockedLossesFromFiscalRuntime({
+      operations: operationsRows as RuntimeOperationRow[],
+      saleSummaries
+    }).map((blockedLoss: BlockedLossRow) => ({
+      sale_operation_id: blockedLoss.sale_operation_id,
+      blocked_by_buy_operation_id: blockedLoss.blocked_by_buy_operation_id,
+      isin: blockedLoss.isin,
+      sale_date: blockedLoss.sale_date,
+      blocked_by_buy_date: blockedLoss.blocked_by_buy_date,
+      window_months: blockedLoss.window_months,
+      sale_quantity: blockedLoss.sale_quantity,
+      blocked_by_buy_quantity: blockedLoss.blocked_by_buy_quantity,
+      realized_loss: blockedLoss.realized_loss,
+      currency: blockedLoss.currency,
+      reason: blockedLoss.reason,
+      sale_description: blockedLoss.sale_description,
+      blocked_by_buy_description: blockedLoss.blocked_by_buy_description,
+      sale_source: blockedLoss.sale_source,
+      blocked_by_buy_source: blockedLoss.blocked_by_buy_source
+    }));
 
     return NextResponse.json({
       current_user: {
@@ -364,12 +391,14 @@ export async function GET(
         lots_open: responseLots.filter((lot) => lot.status === "OPEN").length,
         lots_closed: responseLots.filter((lot) => lot.status === "CLOSED").length,
         sales_matched: saleSummaries.filter((sale) => sale.status === "MATCHED").length,
-        sales_pending: saleSummaries.filter((sale) => sale.status !== "MATCHED").length
+        sales_pending: saleSummaries.filter((sale) => sale.status !== "MATCHED").length,
+        blocked_losses: blockedLosses.length
       },
       documents: responseDocuments,
       operations: responseOperations,
       lots: responseLots,
       sale_summaries: saleSummaries,
+      blocked_losses: blockedLosses,
       exports: exportsRows.map((row) => ({
         id: row.id,
         model: row.model,

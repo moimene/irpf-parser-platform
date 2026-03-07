@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { TradeEvent } from "@/lib/rules-core";
+import { detectBlockedLosses, type TradeEvent } from "@/lib/rules-core";
 import { dbTables } from "@/lib/db-tables";
 
 type JsonObject = Record<string, unknown>;
@@ -104,10 +104,29 @@ export type FiscalRuntimeIssue = {
   quantity?: number | null;
 };
 
+export type FiscalBlockedLoss = {
+  sale_operation_id: string;
+  blocked_by_buy_operation_id: string;
+  isin: string;
+  sale_date: string;
+  blocked_by_buy_date: string;
+  window_months: number;
+  sale_quantity: number;
+  blocked_by_buy_quantity: number;
+  realized_loss: number | null;
+  currency: string | null;
+  reason: string;
+  sale_description: string | null;
+  blocked_by_buy_description: string | null;
+  sale_source: OperationSource;
+  blocked_by_buy_source: OperationSource;
+};
+
 export type DerivedFiscalRuntime = {
   lots: PersistedLot[];
   allocations: PersistedSaleAllocation[];
   saleSummaries: FiscalSaleSummary[];
+  blockedLosses: FiscalBlockedLoss[];
   issues: FiscalRuntimeIssue[];
 };
 
@@ -324,6 +343,71 @@ export function buildTradeEventsFromFiscalRuntime(input: {
     });
 }
 
+export function detectBlockedLossesFromFiscalRuntime(input: {
+  operations: RuntimeOperationRow[];
+  saleSummaries: FiscalSaleSummary[];
+}): FiscalBlockedLoss[] {
+  const operationById = new Map(input.operations.map((operation) => [operation.id, operation]));
+  const saleSummaryById = new Map(
+    input.saleSummaries.map((summary) => [summary.sale_operation_id, summary])
+  );
+
+  return detectBlockedLosses(
+    buildTradeEventsFromFiscalRuntime({
+      operations: input.operations,
+      saleSummaries: input.saleSummaries
+    })
+  )
+    .flatMap<FiscalBlockedLoss>((blockedLoss) => {
+      const saleOperation = operationById.get(blockedLoss.sellEventId);
+      const buyOperation = operationById.get(blockedLoss.blockedByBuyEventId);
+
+      if (!saleOperation || !buyOperation || !saleOperation.isin?.trim()) {
+        return [];
+      }
+
+      const saleSummary = saleSummaryById.get(blockedLoss.sellEventId);
+      const realizedGain = saleSummary?.realized_gain ?? toNumber(saleOperation.realized_gain);
+      const realizedLoss =
+        realizedGain !== null && realizedGain < 0 ? roundValue(Math.abs(realizedGain), 4) : null;
+
+      return [
+        {
+          sale_operation_id: saleOperation.id,
+          blocked_by_buy_operation_id: buyOperation.id,
+          isin: saleOperation.isin.trim().toUpperCase(),
+          sale_date: saleOperation.operation_date,
+          blocked_by_buy_date: buyOperation.operation_date,
+          window_months: blockedLoss.windowMonths,
+          sale_quantity: roundValue(Math.abs(toNumber(saleOperation.quantity) ?? 0), 6),
+          blocked_by_buy_quantity: roundValue(Math.abs(toNumber(buyOperation.quantity) ?? 0), 6),
+          realized_loss: realizedLoss,
+          currency: normalizeCurrency(saleSummary?.currency ?? saleOperation.currency ?? buyOperation.currency),
+          reason: blockedLoss.reason,
+          sale_description: saleSummary?.description ?? saleOperation.description ?? saleOperation.manual_notes ?? null,
+          blocked_by_buy_description:
+            buyOperation.description ?? buyOperation.manual_notes ?? null,
+          sale_source: saleOperation.source,
+          blocked_by_buy_source: buyOperation.source
+        }
+      ];
+    })
+    .sort((left, right) => {
+      const bySaleDate = new Date(left.sale_date).getTime() - new Date(right.sale_date).getTime();
+      if (bySaleDate !== 0) {
+        return bySaleDate;
+      }
+
+      const byBuyDate =
+        new Date(left.blocked_by_buy_date).getTime() - new Date(right.blocked_by_buy_date).getTime();
+      if (byBuyDate !== 0) {
+        return byBuyDate;
+      }
+
+      return left.sale_operation_id.localeCompare(right.sale_operation_id);
+    });
+}
+
 export function deriveFiscalRuntimeFromOperations(input: {
   expedienteId: string;
   operations: RuntimeOperationRow[];
@@ -513,11 +597,16 @@ export function deriveFiscalRuntimeFromOperations(input: {
     operations: sortedOperations,
     allocations
   });
+  const blockedLosses = detectBlockedLossesFromFiscalRuntime({
+    operations: sortedOperations,
+    saleSummaries
+  });
 
   return {
     lots,
     allocations,
     saleSummaries,
+    blockedLosses,
     issues
   };
 }
@@ -587,6 +676,41 @@ export async function rebuildExpedienteFiscalRuntime(
 
     if (insertAllocationsError) {
       throw new Error(`No se pudieron persistir asignaciones FIFO: ${insertAllocationsError.message}`);
+    }
+  }
+
+  const { error: deleteBlockedLossAlertsError } = await supabase
+    .from(dbTables.alerts)
+    .delete()
+    .eq("expediente_id", expedienteId)
+    .eq("category", "fiscal.blocked_loss")
+    .eq("status", "open");
+
+  if (deleteBlockedLossAlertsError) {
+    throw new Error(
+      `No se pudieron limpiar alertas de pérdidas bloqueadas: ${deleteBlockedLossAlertsError.message}`
+    );
+  }
+
+  if (runtime.blockedLosses.length > 0) {
+    const { error: insertBlockedLossAlertsError } = await supabase.from(dbTables.alerts).insert(
+      runtime.blockedLosses.map((blockedLoss) => ({
+        id: crypto.randomUUID(),
+        expediente_id: expedienteId,
+        severity: "warning" as const,
+        category: "fiscal.blocked_loss",
+        message: `Venta con pérdida de ${blockedLoss.isin} el ${blockedLoss.sale_date} bloqueada por recompra el ${blockedLoss.blocked_by_buy_date}.`,
+        status: "open" as const,
+        entity_type: "operation",
+        entity_id: blockedLoss.sale_operation_id,
+        metadata: blockedLoss
+      }))
+    );
+
+    if (insertBlockedLossAlertsError) {
+      throw new Error(
+        `No se pudieron persistir alertas de pérdidas bloqueadas: ${insertBlockedLossAlertsError.message}`
+      );
     }
   }
 }

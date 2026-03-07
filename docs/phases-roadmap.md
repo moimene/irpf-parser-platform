@@ -37,14 +37,13 @@ Iniciada:
 - Vista de expediente con tablas de operaciones fiscales y lotes de adquisicion
 - Asignaciones `venta -> lote` persistidas en `irpf_sale_allocations`
 - Vista de ganancias/perdidas con coste fiscal consumido y cuadre FIFO por venta
+- Deteccion y trazabilidad de perdidas bloqueadas por recompra en expediente, alerts y preview del modelo 100
 - Validacion de modelo 100 basada en runtime fiscal real, no en `realized_gain` raw del parser
 
 Pendiente para cerrar:
 
-- Lotes de adquisicion en runtime
 - FIFO fiscal completo
 - Herencias, transferencias y ajustes manuales
-- Bloqueos de perdidas con trazabilidad
 - Vistas operativas de operaciones, lotes y ganancias/perdidas
 
 Fase 2 queda abierta con la primera slice vertical ya operativa.

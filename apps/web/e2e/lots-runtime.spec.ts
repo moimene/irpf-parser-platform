@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { deriveFiscalRuntimeFromOperations } from "../lib/lots";
+import { detectBlockedLossesFromFiscalRuntime, deriveFiscalRuntimeFromOperations } from "../lib/lots";
+import { validateModel100 } from "../lib/rules/validation";
 
 test.describe("Runtime de lotes IRPF", () => {
   test("deriva lotes FIFO abiertos y cerrados desde compras y ventas", async () => {
@@ -168,6 +169,129 @@ test.describe("Runtime de lotes IRPF", () => {
       cost_basis: 1000,
       realized_gain: null,
       status: "UNRESOLVED"
+    });
+  });
+
+  test("detecta pérdidas bloqueadas por recompra y las mantiene como warning trazable", async () => {
+    const operations = [
+      {
+        id: "buy-1",
+        expediente_id: "expediente-blocked-loss",
+        operation_type: "COMPRA",
+        operation_date: "2024-11-10",
+        isin: "US0000000001",
+        description: "Compra inicial",
+        amount: 1000,
+        currency: "EUR",
+        quantity: 10,
+        realized_gain: null,
+        source: "AUTO" as const,
+        manual_notes: null,
+        created_at: "2024-11-10T09:00:00Z"
+      },
+      {
+        id: "sell-1",
+        expediente_id: "expediente-blocked-loss",
+        operation_type: "VENTA",
+        operation_date: "2025-02-10",
+        isin: "US0000000001",
+        description: "Venta con pérdida",
+        amount: 800,
+        currency: "EUR",
+        quantity: 10,
+        realized_gain: null,
+        source: "MANUAL" as const,
+        manual_notes: "Venta revisada",
+        created_at: "2025-02-10T09:00:00Z"
+      },
+      {
+        id: "buy-2",
+        expediente_id: "expediente-blocked-loss",
+        operation_type: "COMPRA",
+        operation_date: "2025-03-01",
+        isin: "US0000000001",
+        description: "Recompra dentro de ventana",
+        amount: 220,
+        currency: "EUR",
+        quantity: 2,
+        realized_gain: null,
+        source: "AUTO" as const,
+        manual_notes: null,
+        created_at: "2025-03-01T09:00:00Z"
+      }
+    ];
+
+    const result = deriveFiscalRuntimeFromOperations({
+      expedienteId: "expediente-blocked-loss",
+      operations
+    });
+
+    const blockedLosses = detectBlockedLossesFromFiscalRuntime({
+      operations,
+      saleSummaries: result.saleSummaries
+    });
+
+    expect(result.saleSummaries[0]).toMatchObject({
+      sale_operation_id: "sell-1",
+      cost_basis: 1000,
+      realized_gain: -200,
+      status: "MATCHED"
+    });
+
+    expect(blockedLosses).toEqual([
+      expect.objectContaining({
+        sale_operation_id: "sell-1",
+        blocked_by_buy_operation_id: "buy-2",
+        isin: "US0000000001",
+        sale_date: "2025-02-10",
+        blocked_by_buy_date: "2025-03-01",
+        window_months: 2,
+        realized_loss: 200,
+        sale_source: "MANUAL",
+        blocked_by_buy_source: "AUTO"
+      })
+    ]);
+
+    expect(result.blockedLosses).toEqual(blockedLosses);
+
+    expect(
+      validateModel100({
+        trades: [
+          {
+            id: "buy-1",
+            isin: "US0000000001",
+            type: "BUY",
+            tradeDate: "2024-11-10",
+            quantity: 10,
+            assetKind: "LISTED"
+          },
+          {
+            id: "sell-1",
+            isin: "US0000000001",
+            type: "SELL",
+            tradeDate: "2025-02-10",
+            quantity: 10,
+            gainLossEur: -200,
+            assetKind: "LISTED"
+          },
+          {
+            id: "buy-2",
+            isin: "US0000000001",
+            type: "BUY",
+            tradeDate: "2025-03-01",
+            quantity: 2,
+            assetKind: "LISTED"
+          }
+        ],
+        unresolvedSales: 0,
+        pendingCostBasisSales: 0,
+        invalidSales: 0
+      })
+    ).toMatchObject({
+      validationState: "warnings",
+      messages: [
+        "1 perdida(s) bloqueada(s) por recompra detectada(s) en reglas 2/12 meses."
+      ]
     });
   });
 });

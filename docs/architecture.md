@@ -50,9 +50,16 @@
 La arquitectura actual consolida el flujo critico de expediente y documentos, pero todavia no implementa de forma completa:
 
 - SSO corporativo,
-- ajustes manuales de coste/herencia/transferencia y trazabilidad de bloqueo de perdidas,
+- ajustes manuales de coste/herencia/transferencia,
 - editor de revisión con trazabilidad por celda/caja estable sobre el documento fuente,
 - patrimonio y no cotizadas,
 - configuracion de plantillas y reglas como modulo de negocio.
+
+La trazabilidad de perdidas bloqueadas ya forma parte del runtime operativo:
+
+- `apps/web/lib/lots.ts` deriva alertas `fiscal.blocked_loss` al recalcular `irpf_lots` e `irpf_sale_allocations`,
+- `GET /api/expedientes/:id` expone el detalle `venta -> compra bloqueante`,
+- `GET /api/exports/:expediente_id?model=100` incluye el detalle en la previsualizacion de validacion,
+- y la cola de `review` consume esas alertas a traves de `irpf_alerts`.
 
 La referencia de alcance consolidado es `docs/BASELINE_FUNCIONAL_2026-03-06.md`.

@@ -268,7 +268,22 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
   - parser Railway en produccion con deployment `6305dfb2-7992-4578-9e44-824a1ffe0920`
   - health de parser verificada en `https://parser-production-0827.up.railway.app/health` con `version = 0.3.0`
   - web productiva actualizada el 2026-03-07 desde `https://web-jehea286b-moises-menendezs-projects.vercel.app`
-  - alias publico vigente: `https://web-tan-mu-35.vercel.app`
+- alias publico vigente: `https://web-tan-mu-35.vercel.app`
+
+## Actualizacion 2026-03-07 perdidas bloqueadas operables
+
+- `apps/web/lib/lots.ts` deriva ya `blockedLosses` desde el runtime fiscal y sincroniza alertas abiertas `fiscal.blocked_loss` en `irpf_alerts` al recalcular el expediente.
+- `apps/web/app/api/expedientes/[id]/route.ts` expone el detalle `venta -> compra bloqueante` y el contador de perdidas bloqueadas dentro del payload del expediente.
+- `apps/web/components/expediente-summary.tsx` muestra una seccion operativa de perdidas bloqueadas por recompra junto con el detalle de venta, recompra, perdida estimada y ventana 2 meses.
+- `apps/web/app/api/exports/[expediente_id]/route.ts` y `apps/web/components/export-generator.tsx` añaden la misma trazabilidad a la previsualizacion del modelo 100; la descarga sigue permitida como `warning`, no como `error`.
+- La cola de `review` pasa a recibir estas alertas desde `irpf_alerts` sin cambios adicionales en UI ni en dashboard.
+- Cobertura añadida:
+  - `apps/web/e2e/lots-runtime.spec.ts` valida la deteccion de perdida bloqueada por recompra y su estado `warnings` en el modelo 100.
+- Validacion ejecutada:
+  - `npm run typecheck --workspace apps/web`
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd apps/web && E2E_BASE_URL=http://127.0.0.1:3102 npx playwright test` -> `12 passed`
 
 ## Decision de gobierno
 
