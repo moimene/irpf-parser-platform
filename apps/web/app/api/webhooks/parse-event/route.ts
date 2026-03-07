@@ -27,6 +27,36 @@ function statusFromEvent(eventType: string) {
   }
 }
 
+async function shouldIgnoreManualReviewEvent(
+  documentId: string,
+  supabase: ReturnType<typeof createSupabaseAdminClient>
+): Promise<boolean> {
+  if (!supabase) {
+    return false;
+  }
+
+  const [{ data: document }, { data: extraction }] = await Promise.all([
+    supabase
+      .from(dbTables.documents)
+      .select("processing_status")
+      .eq("id", documentId)
+      .maybeSingle(),
+    supabase
+      .from(dbTables.extractions)
+      .select("review_status")
+      .eq("document_id", documentId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+  ]);
+
+  if (document?.processing_status === "completed") {
+    return true;
+  }
+
+  return extraction?.review_status === "validated" || extraction?.review_status === "not_required";
+}
+
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
   const parsed = parseEventSchema.safeParse(body);
@@ -41,6 +71,10 @@ export async function POST(request: Request) {
   }
 
   const resolvedExpediente = normalizeExpedienteId(parsed.data.expediente_id);
+  const ignoreManualReviewEvent =
+    parsed.data.event_type === "manual.review.required"
+      ? await shouldIgnoreManualReviewEvent(parsed.data.document_id, supabase)
+      : false;
 
   const { error: expedienteError } = await supabase.from(dbTables.expedientes).upsert(
     {
@@ -64,7 +98,7 @@ export async function POST(request: Request) {
   }
 
   const status = statusFromEvent(parsed.data.event_type);
-  if (status) {
+  if (status && !ignoreManualReviewEvent) {
     const { error: updateError } = await supabase
       .from(dbTables.documents)
       .update({
@@ -106,7 +140,10 @@ export async function POST(request: Request) {
     );
   }
 
-  if (parsed.data.event_type === "parse.failed" || parsed.data.event_type === "manual.review.required") {
+  if (
+    (parsed.data.event_type === "parse.failed" || parsed.data.event_type === "manual.review.required") &&
+    !ignoreManualReviewEvent
+  ) {
     const { error: alertError } = await supabase.from(dbTables.alerts).insert({
       id: crypto.randomUUID(),
       expediente_id: resolvedExpediente.id,

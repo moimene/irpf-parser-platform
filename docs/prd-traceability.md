@@ -1,37 +1,58 @@
-# Matriz de Trazabilidad PRD -> Implementación
+# Matriz de Trazabilidad PRD -> Implementacion
+
+Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.md`
 
 ## Componentes PRD
 
 - **Extractor OCR Adaptativo**
   - Implementado: `services/parser/app/parser_engine.py`
-  - Estado: baseline con plantillas + fallback semántico
+  - Estado: baseline con plantillas por entidad + fallback semantico + revision manual
+  - Gap actual: OCR real e ingesta completa de imagen/Excel siguen pendientes
 
 - **Motor de Reglas**
   - Implementado: `packages/rules/src/index.ts`, `apps/web/lib/rules/validation.ts`
-  - Estado: recompras 2/12 meses + FIFO inicial
+  - Estado: recompras 2/12 meses + FIFO inicial + runtime de lotes derivados en expediente
+
+- **Operativa de despacho**
+  - Implementado: `apps/web/app/clientes`, `apps/web/app/configuracion`, `apps/web/lib/auth.ts`
+  - Estado: clientes, expedientes, auth real, RBAC base, migracion al schema moderno, auditoria funcional de accesos e invitaciones/onboarding ya estan vivos
+  - Gap actual: faltan gobierno corporativo completo y SSO corporativo
 
 - **Integrador RM / no cotizadas**
-  - Implementado: esquema de datos en `infra/supabase/migrations/0001_init.sql`
-  - Estado: pendiente lógica de ingestión de fuente externa
+  - Implementado: solo como antecedente de diseno en `infra/supabase/migrations/0001_init.sql`
+  - Estado: no presente en runtime `irpf_*`
 
 ## APIs requeridas
 
+- `GET /api/clientes` -> implementada
+- `GET /api/clientes/:id` -> implementada
+- `POST /api/clientes` -> implementada
+- `POST /api/expedientes` -> implementada
+- `GET /api/expedientes/:id` -> implementada
 - `POST /api/documents/intake` -> implementada
+- `POST /api/documents/upload-urls` -> implementada
+- `GET /api/session` -> implementada
 - `POST /parse-document` -> implementada
-- Webhooks n8n `parse.*` -> implementados (workflow + endpoint receptor)
+- Webhooks n8n `parse.*` -> implementados
 - `GET /api/exports/:expediente_id?model=100|714|720` -> implementada
+- `PATCH /api/review/:extraction_id` -> implementada
+- `POST /api/access/users` -> implementada
 
-## Historias críticas cubiertas
+## Historias criticas cubiertas
 
-- HU-001 (ingesta múltiple hasta 20): cubierta por validación API + e2e
-- HU-009/012 (previsualización/generación): cubierta por `ExportGenerator`
+- HU-001 (ingesta multiple hasta 20): cubierta por validacion API + E2E
+- HU-005 (navegacion por clientes/expedientes): cubierta
+- HU-009/012 (previsualizacion/generacion): cubierta por `ExportGenerator`
 - HU-014 (alertas): cubierta por `review` + `alerts`
-- HU-008 (pérdidas bloqueadas): cubierta en motor de reglas base
+- HU-008 (perdidas bloqueadas): cubierta en motor de reglas base
+- HU-operativa-01 (login real y acceso por rol): cubierta en slice inicial de auth
+- HU-operativa-02 (seleccion explicita de cliente en intake): cubierta en UI + API + E2E
 
-## Gaps explícitos para próxima iteración
+## Gaps explicitos para proxima iteracion
 
-1. OCR real sobre PDF escaneado/imágenes (actualmente baseline textual)
-2. Persistencia completa de operaciones/lotes desde respuesta parser
-3. Integración oficial BOE y Registro Mercantil
-4. Export binario AEAT real (`.100/.714/.720`) más allá de artefacto lógico
-5. RBAC y SSO corporativo
+1. OCR real sobre PDF escaneado / imagen / Excel
+2. FIFO fiscal completo con ajustes manuales, herencias, transferencias y bloqueo de perdidas operable
+3. Integracion oficial BOE y Registro Mercantil
+4. Export AEAT plenamente conforme por modelo y ejercicio
+5. SSO corporativo y gobierno operativo completo
+6. Patrimonio y configuracion como modulos completos de despacho

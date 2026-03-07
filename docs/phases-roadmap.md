@@ -1,30 +1,76 @@
 # Roadmap por Fases
 
-## Fase 0 Setup (completada en baseline)
+Referencia de alcance consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.md`
 
-- Contratos API y eventos definidos
-- Modelo unificado de datos inicial
-- Workflow de orquestación base
+## Fase 0 Baseline operativa (completada)
 
-## Fase 1 MVP extracción (completada en baseline)
+- Contratos API estabilizados
+- Web, parser y produccion reconciliados con el repo
+- Persistencia runtime `irpf_*`
+- Flujo critico `ingesta -> parseo -> review -> export`
+- E2E productivo del flujo principal
 
-- Intake batch (hasta 20 docs)
-- Parser adaptativo con confianza y revisión manual
-- Cola de revisión en UI
+## Fase 1 Operativa de despacho
 
-## Fase 2 Motor fiscal (baseline parcial)
+Completado:
 
-- Reglas recompras 2/12 meses
-- Base FIFO para asignación de lotes
-- Validación de exportación de Modelo 100
+- Modulo real de clientes
+- Relacion cliente -> expediente -> modelo -> ejercicio
+- Navegacion lateral completa
+- Auth real sobre Supabase Auth
+- RBAC base por rol y asignacion
+- Configuracion y acceso como modulo vivo
+- Intake con seleccion explicita de cliente para expedientes no vinculados
+- `auth_user_id` persistente
+- Migracion a schema moderno sin fallback legacy
+- Auditoria funcional de accesos
+- Invitaciones y onboarding de usuarios
 
-## Fase 3 IP no cotizadas (pendiente implementación funcional detallada)
+Fase 1 queda cerrada.
 
-- Integración fuente mercantil
-- Cálculo nominal/teórico/capitalización por entidad
+## Fase 2 Modelo fiscal IRPF
 
-## Fase 4 Optimización (baseline de evaluación y e2e listo)
+Iniciada:
 
-- Suite de evaluación con umbrales
-- E2E de flujos críticos
-- Punto de extensión multiagente y hardening de seguridad
+- Persistencia rica de `irpf_operations` con `description`, `amount`, `currency` y `retention`
+- Tabla derivada `irpf_lots` recalculada tras intake automatico y review aprobada
+- Vista de expediente con tablas de operaciones fiscales y lotes de adquisicion
+
+Pendiente para cerrar:
+
+- Lotes de adquisicion en runtime
+- FIFO fiscal completo
+- Herencias, transferencias y ajustes manuales
+- Bloqueos de perdidas con trazabilidad
+- Vistas operativas de operaciones, lotes y ganancias/perdidas
+
+Fase 2 queda abierta con la primera slice vertical ya operativa.
+
+## Fase 3 Patrimonio e IP
+
+- Cuentas financieras y posiciones a cierre
+- Tipos de cambio y saldo medio trimestral
+- Modulo de patrimonio
+- No cotizadas con calculo fiscal y soporte de carga manual
+
+## Fase 4 Modelo 720
+
+- Bienes por bloque y pais
+- Umbrales de declaracion
+- Titularidad y comparativa interanual
+- Previsualizacion funcional previa a exportacion
+
+## Fase 5 Administracion y gobierno
+
+- Configuracion de plantillas
+- Reglas configurables
+- Auditoria funcional
+- Alertas accionables
+- Catalogos y tablas maestras
+
+## Fase 6 Integraciones externas
+
+- BOE
+- Registro Mercantil
+- Cruces 189/198
+- Validacion AEAT y servicios adicionales

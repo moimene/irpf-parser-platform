@@ -38,6 +38,7 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  return;
  }
  setResult(payload);
+ window.dispatchEvent(new Event("expediente:refresh"));
  } catch (err) {
  setError(err instanceof Error ? err.message : "Error desconocido");
  } finally {

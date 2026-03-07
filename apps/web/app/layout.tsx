@@ -1,34 +1,23 @@
 import type { Metadata } from "next";
+import { Montserrat } from "next/font/google";
 import Link from "next/link";
-import { getAbogadoActual } from "@/lib/supabase-auth";
+import { SessionSwitcher } from "@/components/session-switcher";
 import "./globals.css";
 
-export const dynamic = "force-dynamic";
+const montserrat = Montserrat({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  display: "swap"
+});
 
 export const metadata: Metadata = {
   title: "IRPF Parser Console",
   description: "Consola para extracción y validación fiscal IRPF/IP/720",
 };
 
-const ROL_LABEL: Record<string, string> = {
-  socio: "Socio",
-  asociado: "Asociado",
-  paralegal: "Paralegal",
-};
-
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const abogado = await getAbogadoActual().catch(() => null);
-
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="es">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&display=swap"
-          rel="stylesheet"
-        />
-      </head>
+    <html lang="es" className={montserrat.className}>
       <body>
         <div className="app-frame">
           <aside className="sidebar" aria-label="Navegación principal">
@@ -43,32 +32,19 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <Link href="/clientes" className="sidebar-link">
                 Clientes
               </Link>
+              <Link href="/expedientes/demo-irpf-2025" className="sidebar-link">
+                Expediente demo
+              </Link>
               <Link href="/review" className="sidebar-link">
-                Revision manual
+                Revisión manual
               </Link>
               <Link href="/configuracion" className="sidebar-link">
-                Configuracion
+                Configuración
               </Link>
             </nav>
-
-            {abogado && (
-              <div className="sidebar-user">
-                <div className="sidebar-user-info">
-                  <span className="sidebar-user-name">{abogado.nombre}</span>
-                  <span className="sidebar-user-rol">
-                    {ROL_LABEL[abogado.rol] ?? abogado.rol}
-                  </span>
-                </div>
-                <form action="/api/auth/logout" method="POST">
-                  <button type="submit" className="sidebar-logout">
-                    Salir
-                  </button>
-                </form>
-              </div>
-            )}
-
             <div className="sidebar-meta">
-              <span>Vercel · Railway · n8n · Supabase</span>
+              <span>Stack: Vercel · Railway · n8n · Supabase</span>
+              <span>Normativa UX inspirada en guía Garrigues</span>
             </div>
           </aside>
 
@@ -78,10 +54,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <p className="topbar-title">Panel de Control Fiscal</p>
                 <p className="topbar-subtitle">Trazabilidad completa de extracción, reglas y exportación AEAT</p>
               </div>
-              <div className="topbar-chips" aria-label="Estado del entorno">
-                <span className="chip success">Producción</span>
-                <span className="chip">Parser conectado</span>
-                <span className="chip">Workflow n8n</span>
+              <div className="topbar-actions">
+                <SessionSwitcher />
+                <div className="topbar-chips" aria-label="Estado del entorno">
+                  <span className="chip success">Producción</span>
+                  <span className="chip">Parser conectado</span>
+                  <span className="chip">Workflow n8n</span>
+                </div>
               </div>
             </header>
             <main className="main-content">{children}</main>

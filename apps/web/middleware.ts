@@ -1,73 +1,65 @@
-import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isSupabaseAuthEnabled } from "@/lib/supabase-auth";
+import { createSupabaseMiddlewareAuthClient } from "@/lib/supabase-auth-server";
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const SUPABASE_ANON_KEY =
-  process.env.SUPABASE_PUBLISHABLE_KEY ??
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-  "";
+function isPublicRoute(pathname: string): boolean {
+  return (
+    pathname === "/login" ||
+    pathname === "/onboarding" ||
+    pathname.startsWith("/auth/callback") ||
+    pathname.startsWith("/api/webhooks/parse-event")
+  );
+}
 
-/** Rutas públicas que no requieren autenticación */
-const PUBLIC_PATHS = ["/login", "/api/auth/callback"];
+function isStaticAsset(pathname: string): boolean {
+  return (
+    pathname.startsWith("/_next") ||
+    pathname.startsWith("/favicon") ||
+    /\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml|map)$/.test(pathname)
+  );
+}
 
 export async function middleware(request: NextRequest) {
+  if (!isSupabaseAuthEnabled()) {
+    return NextResponse.next();
+  }
+
   const { pathname } = request.nextUrl;
-
-  // Permitir rutas públicas y assets estáticos
-  if (
-    PUBLIC_PATHS.some((p) => pathname.startsWith(p)) ||
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/favicon")
-  ) {
+  if (isStaticAsset(pathname)) {
     return NextResponse.next();
   }
 
-  // Permitir webhooks del parser (llamadas server-to-server sin sesión)
-  if (pathname.startsWith("/api/webhooks")) {
-    return NextResponse.next();
+  const response = NextResponse.next();
+  const supabase = createSupabaseMiddlewareAuthClient(request, response);
+  if (!supabase) {
+    return response;
   }
 
-  let supabaseResponse = NextResponse.next({ request });
+  const {
+    data: { user }
+  } = await supabase.auth.getUser();
 
-  const supabase = createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value }) =>
-          request.cookies.set(name, value)
-        );
-        supabaseResponse = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) =>
-          supabaseResponse.cookies.set(name, value, options)
-        );
-      },
-    },
-  });
-
-  // Refrescar la sesión si ha expirado
-  const { data: { user } } = await supabase.auth.getUser();
-
-  // Redirigir a /login si no hay sesión
-  if (!user) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
+  if (pathname === "/login" && user) {
+    return NextResponse.redirect(new URL("/", request.url));
   }
 
-  return supabaseResponse;
+  if (isPublicRoute(pathname)) {
+    return response;
+  }
+
+  if (user) {
+    return response;
+  }
+
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: "Sesión no autenticada." }, { status: 401 });
+  }
+
+  const loginUrl = new URL("/login", request.url);
+  loginUrl.searchParams.set("next", pathname);
+  return NextResponse.redirect(loginUrl);
 }
 
 export const config = {
-  matcher: [
-    /*
-     * Aplicar middleware a todas las rutas excepto:
-     * - _next/static (archivos estáticos)
-     * - _next/image (optimización de imágenes)
-     * - favicon.ico
-     */
-    "/((?!_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image).*)"]
 };
