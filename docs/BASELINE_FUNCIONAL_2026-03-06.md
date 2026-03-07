@@ -91,7 +91,7 @@ La suite E2E cubre:
 | Revision manual | Implementado | `apps/web/app/api/review/[extraction_id]/route.ts` | Aprobacion o rechazo funcional. |
 | Expediente operativo | Implementado | `apps/web/app/api/expedientes/[id]/route.ts` | Estado, cliente, documentos, exportes. |
 | Dashboard operativo | Implementado | `apps/web/app/api/dashboard/route.ts` | Metricas base de operacion. |
-| Motor fiscal IRPF | Parcial | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts` | Reglas base, sin modelo fiscal completo. |
+| Motor fiscal IRPF | Parcial | `apps/web/lib/rules/validation.ts`, `packages/rules/src/index.ts`, `apps/web/lib/lots.ts` | Runtime fiscal con lotes y asignaciones FIFO persistidas; faltan ajustes manuales y cierre de dominio completo. |
 | Lotes de adquisicion | Implementado en slice inicial | `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `apps/web/lib/lots.ts` | Runtime derivado por expediente con FIFO basico y vista en expediente; faltan ajustes manuales y cierre fiscal completo. |
 | Patrimonio / IP | Parcial muy inicial | `apps/web/lib/aeat/format.ts` | Export base, no modulo fiscal completo. |
 | Modelo 720 | Parcial muy inicial | `apps/web/lib/aeat/format.ts` | Export simplificado, no solucion completa. |
@@ -170,11 +170,12 @@ Ya construido en esta primera slice:
 - Persistencia rica de operaciones en `irpf_operations`.
 - Lotes de adquisicion en runtime sobre `irpf_lots`.
 - Vista de operaciones y lotes en `GET /api/expedientes/[id]` y en la ficha de expediente.
+- Asignaciones `venta -> lote` en `irpf_sale_allocations`.
+- Vista de ganancias/perdidas con coste fiscal consumido y ganancia/pérdida calculada por venta.
 
 Siguiente foco del track:
 
 - Ajustes manuales de coste, herencia y transferencia.
-- FIFO fiscal completo.
 - Bloqueos de perdidas con trazabilidad operativa.
 - Vistas de ganancias/perdidas y cierre fiscal explicable.
 
@@ -290,5 +291,28 @@ Validacion ejecutada:
 - `npm run build --workspace apps/web`
 - `npm run typecheck --workspace apps/web`
 - `cd apps/web && set -a && source .env.local && set +a && npx playwright test` -> `6 passed`
+
+## Actualizacion 2026-03-07 fase 2 slice asignaciones FIFO
+
+Esta actualizacion profundiza la Fase 2 sobre el runtime ya desplegado:
+
+- `irpf_sale_allocations` persiste el consumo FIFO de cada venta contra sus lotes de adquisicion.
+- El expediente devuelve y muestra ya un resumen fiscal por venta con:
+  - cantidad asignada,
+  - cantidad pendiente,
+  - coste fiscal consumido,
+  - ganancia/pérdida calculada,
+  - y estado del cuadre.
+- La validacion de `GET /api/exports/[expediente_id]?model=100` usa el runtime fiscal persistido para marcar errores cuando una venta no esta cuadrada o no tiene coste fiscal.
+- La descarga del modelo 100 se alimenta del resumen fiscal de ventas en vez del `realized_gain` crudo de origen.
+- La descarga queda bloqueada cuando la validacion fiscal devuelve errores.
+
+Validacion ejecutada:
+
+- `npm run lint --workspace apps/web`
+- `npm run build --workspace apps/web`
+- `npm run typecheck --workspace apps/web`
+- `cd apps/web && set -a && source .env.local && set +a && npx playwright test` -> `7 passed`
+- Despliegue a produccion actualizado el 2026-03-07: `https://web-tan-mu-35.vercel.app` desde `https://web-ceaw42msf-moises-menendezs-projects.vercel.app`
 - Despliegue a produccion actualizado el 2026-03-07: `https://web-tan-mu-35.vercel.app` desde `https://web-g45hhkd5i-moises-menendezs-projects.vercel.app`
 - `vercel curl` post-deploy sobre `/login` y `/api/session` coherente sin sesion

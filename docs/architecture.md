@@ -21,9 +21,9 @@
 - Estrategia: plantilla conocida -> fallback semántico -> revisión manual
 - Soporte inicial entidades: Pictet, Goldman Sachs, Citi
 
-## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`)
+## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`)
 
-- Tablas runtime: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_lots`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
+- Tablas runtime: `irpf_clients`, `irpf_expedientes`, `irpf_documents`, `irpf_extractions`, `irpf_operations`, `irpf_lots`, `irpf_sale_allocations`, `irpf_alerts`, `irpf_exports`, `irpf_audit_log`
 - El esquema rico inicial de `0001_init.sql` existe como antecedente de diseño, pero no es la base operativa actual
 
 ## Capa n8n (`infra/n8n/workflows/irpf-parser-orchestration.json`)
@@ -41,7 +41,7 @@
 La arquitectura actual consolida el flujo critico de expediente y documentos, pero todavia no implementa de forma completa:
 
 - SSO corporativo,
-- FIFO fiscal completo con ajustes manuales y trazabilidad de bloqueo de perdidas,
+- ajustes manuales de coste/herencia/transferencia y trazabilidad de bloqueo de perdidas,
 - patrimonio y no cotizadas,
 - configuracion de plantillas y reglas como modulo de negocio.
 

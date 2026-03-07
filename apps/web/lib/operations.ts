@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AeatRecord } from "@/lib/aeat/format";
 import type { ParsedRecord } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
-import { rebuildExpedienteLots } from "@/lib/lots";
+import { rebuildExpedienteFiscalRuntime } from "@/lib/lots";
 
 type JsonObject = Record<string, unknown>;
 export type OperationSource = "AUTO" | "MANUAL" | "IMPORTACION_EXCEL";
@@ -187,7 +187,7 @@ export async function replaceDocumentOperations(
   }
 
   if (operations.length === 0) {
-    await rebuildExpedienteLots(supabase, expedienteId);
+    await rebuildExpedienteFiscalRuntime(supabase, expedienteId);
     return;
   }
 
@@ -196,7 +196,7 @@ export async function replaceDocumentOperations(
     throw new Error(`No se pudieron persistir operaciones: ${insertError.message}`);
   }
 
-  await rebuildExpedienteLots(supabase, expedienteId);
+  await rebuildExpedienteFiscalRuntime(supabase, expedienteId);
 }
 
 export function toAeatRecord(row: PersistedOperationRow): AeatRecord {

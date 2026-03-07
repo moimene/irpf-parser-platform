@@ -64,6 +64,25 @@ type ExpedienteLot = {
   sales_count: number;
 };
 
+type ExpedienteSaleSummary = {
+  sale_operation_id: string;
+  operation_date: string;
+  isin: string | null;
+  description: string | null;
+  quantity: number | null;
+  sale_amount: number | null;
+  sale_amount_allocated: number | null;
+  quantity_allocated: number;
+  missing_quantity: number;
+  cost_basis: number | null;
+  realized_gain: number | null;
+  reported_realized_gain: number | null;
+  currency: string | null;
+  allocations_count: number;
+  status: "MATCHED" | "UNRESOLVED" | "PENDING_COST_BASIS" | "INVALID_DATA";
+  source: string;
+};
+
 type ExpedientePayload = {
   expediente_id: string;
   expediente_reference: string;
@@ -88,10 +107,13 @@ type ExpedientePayload = {
     exports: number;
     lots_open: number;
     lots_closed: number;
+    sales_matched: number;
+    sales_pending: number;
   };
   documents: ExpedienteDocument[];
   operations: ExpedienteOperation[];
   lots: ExpedienteLot[];
+  sale_summaries: ExpedienteSaleSummary[];
   exports: ExpedienteExport[];
 };
 
@@ -113,24 +135,46 @@ const emptyState: ExpedientePayload = {
     operations: 0,
     exports: 0,
     lots_open: 0,
-    lots_closed: 0
+    lots_closed: 0,
+    sales_matched: 0,
+    sales_pending: 0
   },
   documents: [],
   operations: [],
   lots: [],
+  sale_summaries: [],
   exports: []
 };
 
 function badgeClass(value: string): string {
-  if (value === "completed" || value === "generated" || value === "validated" || value === "ok") {
+  if (
+    value === "completed" ||
+    value === "generated" ||
+    value === "validated" ||
+    value === "ok" ||
+    value === "OPEN" ||
+    value === "MATCHED"
+  ) {
     return "badge success";
   }
 
-  if (value === "manual_review" || value === "warnings" || value === "pending") {
+  if (
+    value === "manual_review" ||
+    value === "warnings" ||
+    value === "pending" ||
+    value === "PENDING_COST_BASIS" ||
+    value === "CLOSED"
+  ) {
     return "badge warning";
   }
 
-  if (value === "failed" || value === "rejected" || value === "errors") {
+  if (
+    value === "failed" ||
+    value === "rejected" ||
+    value === "errors" ||
+    value === "UNRESOLVED" ||
+    value === "INVALID_DATA"
+  ) {
     return "badge danger";
   }
 
@@ -239,6 +283,14 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
             <span>Lotes cerrados</span>
             <strong>{payload.counts.lots_closed}</strong>
           </article>
+          <article className="kpi">
+            <span>Ventas cuadradas</span>
+            <strong>{payload.counts.sales_matched}</strong>
+          </article>
+          <article className="kpi">
+            <span>Ventas pendientes</span>
+            <strong>{payload.counts.sales_pending}</strong>
+          </article>
         </div>
         {error ? <p className="badge danger" style={{ marginTop: "12px" }}>{error}</p> : null}
       </section>
@@ -292,6 +344,76 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                       )}
                     </td>
                     <td>{document.uploaded_at ? new Date(document.uploaded_at).toLocaleString("es-ES") : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Ganancias y pérdidas</h2>
+        {payload.sale_summaries.length === 0 ? (
+          <p className="muted">
+            Todavía no hay ventas fiscalmente trazadas contra lotes. Cuando existan ventas válidas,
+            esta tabla mostrará coste fiscal consumido y ganancia/pérdida calculada.
+          </p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Venta</th>
+                  <th>Activo</th>
+                  <th>Cuadre FIFO</th>
+                  <th>Resultado fiscal</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.sale_summaries.map((sale) => (
+                  <tr key={sale.sale_operation_id}>
+                    <td>
+                      <div>{new Date(sale.operation_date).toLocaleDateString("es-ES")}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {formatNumber(sale.quantity)} títulos · {formatCurrency(sale.sale_amount, sale.currency)}
+                      </div>
+                    </td>
+                    <td>
+                      <strong>{sale.isin ?? "Sin ISIN"}</strong>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {sale.description ?? "Sin descripción"}
+                      </div>
+                    </td>
+                    <td>
+                      <div>Asignado {formatNumber(sale.quantity_allocated)}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        Pendiente {formatNumber(sale.missing_quantity)} · {sale.allocations_count} tramo(s)
+                      </div>
+                      {sale.sale_amount_allocated !== null ? (
+                        <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                          Ingreso asignado {formatCurrency(sale.sale_amount_allocated, sale.currency)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      <div>Coste {formatCurrency(sale.cost_basis, sale.currency)}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        G/P calculada {formatCurrency(sale.realized_gain, sale.currency)}
+                      </div>
+                      {sale.reported_realized_gain !== null ? (
+                        <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                          Parser {formatCurrency(sale.reported_realized_gain, sale.currency)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      <span className={badgeClass(sale.status)}>{sale.status}</span>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {sale.source}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

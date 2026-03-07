@@ -86,9 +86,7 @@ export function generateModel100(
   lines.push(header.slice(0, 500));
 
   // Registros de operaciones (tipo 2)
-  const ventas = records.filter(
-    (r) => r.operation_type === "VENTA" || r.operation_type === "COMPRA"
-  );
+  const ventas = records.filter((r) => r.operation_type === "VENTA");
 
   ventas.forEach((rec, idx) => {
     const line = [

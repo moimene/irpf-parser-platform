@@ -35,6 +35,9 @@ Iniciada:
 - Persistencia rica de `irpf_operations` con `description`, `amount`, `currency` y `retention`
 - Tabla derivada `irpf_lots` recalculada tras intake automatico y review aprobada
 - Vista de expediente con tablas de operaciones fiscales y lotes de adquisicion
+- Asignaciones `venta -> lote` persistidas en `irpf_sale_allocations`
+- Vista de ganancias/perdidas con coste fiscal consumido y cuadre FIFO por venta
+- Validacion de modelo 100 basada en runtime fiscal real, no en `realized_gain` raw del parser
 
 Pendiente para cerrar:
 

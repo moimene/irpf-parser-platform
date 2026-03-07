@@ -308,6 +308,7 @@ test.describe("Smoke de navegacion IRPF", () => {
     await expect(page).toHaveURL(/\/expedientes\/demo-irpf-2025$/);
     await expect(page.getByRole("heading", { name: "Expediente: demo-irpf-2025" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Estado del expediente" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Ganancias y pérdidas" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Operaciones fiscales" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Lotes de adquisición" })).toBeVisible();
 

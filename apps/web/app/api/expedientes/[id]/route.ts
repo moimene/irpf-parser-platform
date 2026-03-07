@@ -3,6 +3,7 @@ import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurre
 import { findClientCompat } from "@/lib/client-store";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
+import { summarizeSalesFromOperations, type PersistedSaleAllocationRow, type RuntimeOperationRow } from "@/lib/lots";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,7 @@ type ExportRow = {
 
 type OperationRow = {
   id: string;
+  expediente_id: string;
   operation_type: string;
   operation_date: string;
   isin: string | null;
@@ -56,6 +58,17 @@ type OperationRow = {
   confidence: number | string | null;
   manual_notes: string | null;
   created_at: string;
+};
+
+type AllocationRow = {
+  sale_operation_id: string;
+  quantity: number | string;
+  sale_amount_allocated: number | string | null;
+  total_cost: number | string | null;
+  realized_gain: number | string | null;
+  acquisition_date: string;
+  acquisition_operation_id: string | null;
+  currency: string | null;
 };
 
 type LotRow = {
@@ -125,7 +138,7 @@ export async function GET(
     const resolvedExpediente = normalizeExpedienteId(params.id);
     await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "expedientes.read");
 
-    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult] = await Promise.all([
+    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, allocationsResult] = await Promise.all([
       supabase
         .from(dbTables.expedientes)
         .select("id, reference, client_id, fiscal_year, model_type, title, status, created_at, updated_at")
@@ -144,7 +157,7 @@ export async function GET(
       supabase
         .from(dbTables.operations)
         .select(
-          "id, operation_type, operation_date, isin, description, amount, currency, quantity, retention, realized_gain, source, confidence, manual_notes, created_at"
+          "id, expediente_id, operation_type, operation_date, isin, description, amount, currency, quantity, retention, realized_gain, source, confidence, manual_notes, created_at"
         )
         .eq("expediente_id", resolvedExpediente.id)
         .order("operation_date", { ascending: true })
@@ -156,10 +169,24 @@ export async function GET(
         )
         .eq("expediente_id", resolvedExpediente.id)
         .order("acquisition_date", { ascending: true })
-        .order("created_at", { ascending: true })
+        .order("created_at", { ascending: true }),
+      supabase
+        .from(dbTables.saleAllocations)
+        .select(
+          "sale_operation_id, quantity, sale_amount_allocated, total_cost, realized_gain, acquisition_date, acquisition_operation_id, currency"
+        )
+        .eq("expediente_id", resolvedExpediente.id)
+        .order("sale_date", { ascending: true })
+        .order("acquisition_date", { ascending: true })
     ]);
 
-    if (documentsResult.error || exportsResult.error || operationsResult.error || lotsResult.error) {
+    if (
+      documentsResult.error ||
+      exportsResult.error ||
+      operationsResult.error ||
+      lotsResult.error ||
+      allocationsResult.error
+    ) {
       return NextResponse.json(
         {
           error:
@@ -167,6 +194,7 @@ export async function GET(
             exportsResult.error?.message ??
             operationsResult.error?.message ??
             lotsResult.error?.message ??
+            allocationsResult.error?.message ??
             "No se pudo cargar el expediente"
         },
         { status: 500 }
@@ -185,6 +213,7 @@ export async function GET(
     const exportsRows = (exportsResult.data ?? []) as ExportRow[];
     const operationsRows = (operationsResult.data ?? []) as OperationRow[];
     const lotsRows = (lotsResult.data ?? []) as LotRow[];
+    const allocationsRows = (allocationsResult.data ?? []) as AllocationRow[];
     const client = expediente?.client_id ? await findClientCompat(supabase, expediente.client_id) : null;
 
     const documentIds = documents.map((document) => document.id);
@@ -283,6 +312,28 @@ export async function GET(
       sales_count: countLotSales(row.metadata)
     }));
 
+    const saleSummaries = summarizeSalesFromOperations({
+      operations: operationsRows as RuntimeOperationRow[],
+      allocations: allocationsRows as PersistedSaleAllocationRow[]
+    }).map((summary) => ({
+      sale_operation_id: summary.sale_operation_id,
+      operation_date: summary.operation_date,
+      isin: summary.isin,
+      description: summary.description,
+      quantity: summary.quantity,
+      sale_amount: summary.sale_amount,
+      sale_amount_allocated: summary.sale_amount_allocated,
+      quantity_allocated: summary.quantity_allocated,
+      missing_quantity: summary.missing_quantity,
+      cost_basis: summary.cost_basis,
+      realized_gain: summary.realized_gain,
+      reported_realized_gain: summary.reported_realized_gain,
+      currency: summary.currency,
+      allocations_count: summary.allocations_count,
+      status: summary.status,
+      source: summary.source
+    }));
+
     return NextResponse.json({
       current_user: {
         reference: sessionUser.reference,
@@ -311,11 +362,14 @@ export async function GET(
         operations: responseOperations.length,
         exports: exportsRows.length,
         lots_open: responseLots.filter((lot) => lot.status === "OPEN").length,
-        lots_closed: responseLots.filter((lot) => lot.status === "CLOSED").length
+        lots_closed: responseLots.filter((lot) => lot.status === "CLOSED").length,
+        sales_matched: saleSummaries.filter((sale) => sale.status === "MATCHED").length,
+        sales_pending: saleSummaries.filter((sale) => sale.status !== "MATCHED").length
       },
       documents: responseDocuments,
       operations: responseOperations,
       lots: responseLots,
+      sale_summaries: saleSummaries,
       exports: exportsRows.map((row) => ({
         id: row.id,
         model: row.model,
