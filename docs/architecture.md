@@ -18,12 +18,16 @@
 ## Capa Railway (`services/parser`)
 
 - `POST /parse-document`
-- Estrategia: plantilla conocida -> fallback semántico -> revisión manual
+- Estrategia: plantilla conocida -> extracción determinista desde `structured_document` -> fallback semántico -> revisión manual
 - Soporte inicial entidades: Pictet, Goldman Sachs, Citi
-- Endurecimiento siguiente ya decidido:
-  - `XLSX` y `CSV` deben entrar por parser determinista, no por OCR/LLM.
-  - `PDF`, `DOCX` e imagen deben pasar por una capa `structured_document` antes del mapping fiscal.
-  - `Docling` es candidato para esa capa documental por OCR, tablas y representación estructurada, pero no como motor fiscal ni como fuente directa de exportación AEAT.
+- Contrato actual:
+  - `source_type` ya viaja desde intake hasta el parser.
+  - `POST /parse-document` devuelve `structured_document` persistible junto al resultado canónico.
+  - `XLSX` y `CSV` ya entran por parser determinista.
+  - `PDF` ya genera una primera capa `structured_document` con texto y tablas vía `pdfplumber`.
+  - `DOCX` e imagen quedan aceptados a nivel de contrato, pero todavía degradan a revisión manual mientras no exista OCR/Docling operativo.
+- Siguiente endurecimiento ya decidido:
+  - `Docling` como candidato para `PDF/DOCX/IMAGE` en la capa documental por OCR, tablas y representación estructurada.
   - El LLM debe quedar restringido a clasificación semántica y mapping de columnas/campos dentro de un schema cerrado.
 
 ## Capa Supabase runtime (`infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`, `infra/supabase/migrations/20260306130000_reconcile_irpf_operations.sql`, `infra/supabase/migrations/20260306140000_clients_runtime_module.sql`, `infra/supabase/migrations/20260307160000_irpf_lots_runtime_module.sql`, `infra/supabase/migrations/20260307170000_irpf_sale_allocations_runtime_module.sql`)

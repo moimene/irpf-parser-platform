@@ -239,6 +239,37 @@ Cada bloque nuevo se considera consolidado solo si cumple estos cuatro puntos:
   - `cd apps/web && set -a && source .env.local && set +a && npx playwright test` -> `9 passed`
 - Despliegue a produccion actualizado el 2026-03-07: `https://web-tan-mu-35.vercel.app` desde `https://web-44c1ii0cb-moises-menendezs-projects.vercel.app`
 
+## Actualizacion 2026-03-07 structured document y parser tabular
+
+- La ingesta web ya clasifica `source_type` real para `PDF`, `CSV` y `XLSX`; el intake deja de forzar todo a PDF.
+- El parser introduce una capa `structured_document` persistible y separa explícitamente:
+  - documento estructurado,
+  - records canónicos,
+  - y fallback semántico.
+- `CSV` y `XLSX` entran ya por vía determinista.
+- `PDF` devuelve ya una primera estructura de texto y tablas con `pdfplumber`.
+- `DOCX` e `IMAGE` quedan aceptados en contrato pero siguen degradando a revisión manual mientras no exista backend OCR/Docling operativo.
+- La fase de parseo queda ahora:
+  - plantilla conocida,
+  - extracción determinista desde `structured_document`,
+  - fallback LLM,
+  - revisión manual.
+- Cobertura añadida:
+  - `apps/web/e2e/document-source.spec.ts`
+  - `services/parser/tests/test_parser_engine.py` con casos `CSV` y `XLSX`
+  - `services/parser/tests/test_extractors.py`
+- Validacion ejecutada:
+  - `npm run lint --workspace apps/web`
+  - `npm run typecheck --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd services/parser && uv run pytest tests/test_parser_engine.py tests/test_extractors.py` -> `7 passed`
+  - `cd apps/web && set -a && source .env.local && set +a && npx playwright test` -> `11 passed`
+- Despliegue ejecutado:
+  - parser Railway en produccion con deployment `6305dfb2-7992-4578-9e44-824a1ffe0920`
+  - health de parser verificada en `https://parser-production-0827.up.railway.app/health` con `version = 0.3.0`
+  - web productiva actualizada el 2026-03-07 desde `https://web-jehea286b-moises-menendezs-projects.vercel.app`
+  - alias publico vigente: `https://web-tan-mu-35.vercel.app`
+
 ## Decision de gobierno
 
 Mientras no se reemplace explicitamente, esta baseline debe tratarse como la referencia de:
