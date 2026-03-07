@@ -453,3 +453,12 @@ Validacion ejecutada:
 - Despliegue a produccion actualizado el 2026-03-07: `https://web-tan-mu-35.vercel.app` desde `https://web-ceaw42msf-moises-menendezs-projects.vercel.app`
 - Despliegue a produccion actualizado el 2026-03-07: `https://web-tan-mu-35.vercel.app` desde `https://web-g45hhkd5i-moises-menendezs-projects.vercel.app`
 - `vercel curl` post-deploy sobre `/login` y `/api/session` coherente sin sesion
+
+## Actualizacion 2026-03-08 visibilidad del registro canonico
+
+- `GET /api/expedientes/:id` devuelve ya `declaration_profile`, `assets`, `fiscal_events` y contadores de activos/eventos canonicos.
+- La ficha de expediente ya muestra perfil declarativo, activos canonicos y eventos fiscales canonicos, no solo operaciones, lotes y resumen FIFO.
+- Esto deja operativo el consumo del registro canonico para despacho y revision funcional.
+- Sigue pendiente la siguiente slice de producto:
+  - CRUD manual sobre activos/eventos canonicos,
+  - y edicion declarativa directa para `714` / `720` / `IP`.

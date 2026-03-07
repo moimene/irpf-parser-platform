@@ -101,4 +101,14 @@ Los ajustes manuales ya forman parte del runtime operativo:
 - `GET /api/expedientes/:id` expone `adjustments`, `runtime_issues` y el efecto agregado en lotes y resumen fiscal.
 - `GET /api/exports/:expediente_id?model=100` y `/download` validan el modelo 100 contra ese runtime ya ajustado.
 
+Nueva capacidad operativa del registro canonico:
+
+- `apps/web/lib/asset-registry-store.ts` consolida lectura de perfil declarativo, activos y eventos fiscales desde Supabase.
+- `GET /api/expedientes/:id` ya expone esa capa canonica como parte del payload principal de expediente.
+- `apps/web/components/expediente-summary.tsx` consume directamente el registro canonico para visibilidad operativa de despacho.
+- La siguiente frontera ya no es de lectura sino de mutacion:
+  - altas manuales,
+  - correcciones manuales,
+  - y workflow de edicion directa del registro canonico.
+
 La referencia de alcance consolidado es `docs/BASELINE_FUNCIONAL_2026-03-06.md`.

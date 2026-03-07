@@ -120,6 +120,74 @@ type ExpedienteAdjustment = {
   updated_at: string | null;
 };
 
+type DeclarationProfile = {
+  id: string;
+  declarant_nif: string;
+  declared_nif: string;
+  legal_representative_nif: string | null;
+  declared_name: string;
+  contact_name: string | null;
+  contact_phone: string | null;
+  residence_country_code: string | null;
+  residence_territory_code: string | null;
+  default_asset_location_key: "ES" | "EX" | null;
+};
+
+type ExpedienteAsset = {
+  id: string;
+  asset_class:
+    | "ACCOUNT"
+    | "SECURITY"
+    | "COLLECTIVE_INVESTMENT"
+    | "INSURANCE"
+    | "REAL_ESTATE"
+    | "MOVABLE_ASSET";
+  asset_key: "C" | "V" | "I" | "S" | "B" | "M";
+  asset_subkey: string;
+  condition_key: string;
+  country_code: string;
+  tax_territory_code: string | null;
+  location_key: "ES" | "EX";
+  incorporation_date: string;
+  extinction_date: string | null;
+  valuation_1_eur: number;
+  valuation_2_eur: number | null;
+  ownership_percentage: number;
+  currency: string | null;
+  entity_name: string | null;
+  asset_description: string | null;
+  display_name: string;
+  supports_714: boolean;
+  supports_720: boolean;
+  is_foreign: boolean;
+};
+
+type ExpedienteFiscalEvent = {
+  id: string;
+  asset_id: string | null;
+  event_type:
+    | "ACQUISITION"
+    | "DISPOSAL"
+    | "INTEREST"
+    | "DIVIDEND"
+    | "RENT"
+    | "WITHHOLDING"
+    | "GAIN"
+    | "LOSS"
+    | "ADJUSTMENT";
+  event_date: string;
+  quantity: number | null;
+  gross_amount_eur: number | null;
+  net_amount_eur: number | null;
+  withholding_amount_eur: number | null;
+  proceeds_amount_eur: number | null;
+  cost_basis_amount_eur: number | null;
+  realized_result_eur: number | null;
+  currency: string | null;
+  source: string;
+  notes: string | null;
+};
+
 type ExpedienteRuntimeIssue = {
   code: string;
   operation_id: string;
@@ -141,6 +209,8 @@ type ExpedientePayload = {
     display_name: string;
     nif: string;
   } | null;
+  canonical_registry_available: boolean;
+  declaration_profile: DeclarationProfile | null;
   counts: {
     total: number;
     queued: number;
@@ -157,11 +227,17 @@ type ExpedientePayload = {
     blocked_losses: number;
     adjustments_active: number;
     runtime_issues: number;
+    assets_total: number;
+    assets_foreign: number;
+    assets_model_720: number;
+    fiscal_events: number;
   };
   documents: ExpedienteDocument[];
   operations: ExpedienteOperation[];
   lots: ExpedienteLot[];
   adjustments: ExpedienteAdjustment[];
+  assets: ExpedienteAsset[];
+  fiscal_events: ExpedienteFiscalEvent[];
   sale_summaries: ExpedienteSaleSummary[];
   blocked_losses: ExpedienteBlockedLoss[];
   runtime_issues: ExpedienteRuntimeIssue[];
@@ -176,6 +252,8 @@ const emptyState: ExpedientePayload = {
   fiscal_year: new Date().getFullYear(),
   model_type: "IRPF",
   client: null,
+  canonical_registry_available: false,
+  declaration_profile: null,
   counts: {
     total: 0,
     queued: 0,
@@ -191,12 +269,18 @@ const emptyState: ExpedientePayload = {
     sales_pending: 0,
     blocked_losses: 0,
     adjustments_active: 0,
-    runtime_issues: 0
+    runtime_issues: 0,
+    assets_total: 0,
+    assets_foreign: 0,
+    assets_model_720: 0,
+    fiscal_events: 0
   },
   documents: [],
   operations: [],
   lots: [],
   adjustments: [],
+  assets: [],
+  fiscal_events: [],
   sale_summaries: [],
   blocked_losses: [],
   runtime_issues: [],
@@ -266,6 +350,45 @@ function formatCurrency(value: number | null, currency: string | null): string {
   } catch {
     return `${formatNumber(value, 2)} ${resolvedCurrency}`;
   }
+}
+
+function assetClassLabel(value: ExpedienteAsset["asset_class"]): string {
+  switch (value) {
+    case "ACCOUNT":
+      return "Cuenta";
+    case "SECURITY":
+      return "Valor";
+    case "COLLECTIVE_INVESTMENT":
+      return "IIC";
+    case "INSURANCE":
+      return "Seguro";
+    case "REAL_ESTATE":
+      return "Inmueble";
+    case "MOVABLE_ASSET":
+      return "Bien mueble";
+    default:
+      return value;
+  }
+}
+
+function eventAmountSummary(event: ExpedienteFiscalEvent): string {
+  if (event.net_amount_eur !== null) {
+    return formatCurrency(event.net_amount_eur, event.currency);
+  }
+
+  if (event.gross_amount_eur !== null) {
+    return formatCurrency(event.gross_amount_eur, event.currency);
+  }
+
+  if (event.proceeds_amount_eur !== null) {
+    return formatCurrency(event.proceeds_amount_eur, event.currency);
+  }
+
+  if (event.realized_result_eur !== null) {
+    return formatCurrency(event.realized_result_eur, event.currency);
+  }
+
+  return "-";
 }
 
 export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
@@ -360,6 +483,22 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
             <span>Incidencias runtime</span>
             <strong>{payload.counts.runtime_issues}</strong>
           </article>
+          <article className="kpi">
+            <span>Activos canónicos</span>
+            <strong>{payload.counts.assets_total}</strong>
+          </article>
+          <article className="kpi">
+            <span>Activos extranjeros</span>
+            <strong>{payload.counts.assets_foreign}</strong>
+          </article>
+          <article className="kpi">
+            <span>Modelo 720</span>
+            <strong>{payload.counts.assets_model_720}</strong>
+          </article>
+          <article className="kpi">
+            <span>Eventos fiscales</span>
+            <strong>{payload.counts.fiscal_events}</strong>
+          </article>
         </div>
         {error ? <p className="badge danger" style={{ marginTop: "12px" }}>{error}</p> : null}
       </section>
@@ -415,6 +554,198 @@ export function ExpedienteSummary({ expedienteId }: { expedienteId: string }) {
                     <td>{document.uploaded_at ? new Date(document.uploaded_at).toLocaleString("es-ES") : "-"}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Perfil declarativo</h2>
+        {!payload.canonical_registry_available ? (
+          <p className="muted">
+            El schema canónico no está disponible en este entorno. Cuando lo esté, aquí se mostrará el
+            perfil del declarante para 714/720 e IP.
+          </p>
+        ) : !payload.declaration_profile ? (
+          <p className="muted">
+            El expediente todavía no tiene perfil declarativo persistido. La ingesta ya puede crearlo
+            automáticamente desde cliente y review.
+          </p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <tbody>
+                <tr>
+                  <th>Declarante</th>
+                  <td>{payload.declaration_profile.declared_name}</td>
+                  <th>NIF</th>
+                  <td>{payload.declaration_profile.declarant_nif}</td>
+                </tr>
+                <tr>
+                  <th>NIF declarado</th>
+                  <td>{payload.declaration_profile.declared_nif}</td>
+                  <th>Territorio</th>
+                  <td>{payload.declaration_profile.residence_territory_code ?? "ES-COMUN"}</td>
+                </tr>
+                <tr>
+                  <th>País residencia</th>
+                  <td>{payload.declaration_profile.residence_country_code ?? "ES"}</td>
+                  <th>Situación por defecto</th>
+                  <td>{payload.declaration_profile.default_asset_location_key ?? "ES"}</td>
+                </tr>
+                <tr>
+                  <th>Contacto</th>
+                  <td>{payload.declaration_profile.contact_name ?? "-"}</td>
+                  <th>Teléfono</th>
+                  <td>{payload.declaration_profile.contact_phone ?? "-"}</td>
+                </tr>
+                <tr>
+                  <th>Representante legal</th>
+                  <td colSpan={3}>{payload.declaration_profile.legal_representative_nif ?? "-"}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Registro canónico de activos</h2>
+        {!payload.canonical_registry_available ? (
+          <p className="muted">
+            El expediente todavía no puede cargar activos canónicos en este entorno.
+          </p>
+        ) : payload.assets.length === 0 ? (
+          <p className="muted">
+            Todavía no hay activos canónicos persistidos. En cuanto la ingesta o la review emitan cuentas,
+            valores, IIC, seguros, inmuebles o bienes muebles, aparecerán aquí.
+          </p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Activo</th>
+                  <th>Clasificación</th>
+                  <th>Situación</th>
+                  <th>Valoración</th>
+                  <th>Modelos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.assets.map((asset) => (
+                  <tr key={asset.id}>
+                    <td>
+                      <strong>{asset.display_name}</strong>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {asset.entity_name ?? asset.asset_description ?? "Sin entidad"} · {asset.country_code}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="badge">{assetClassLabel(asset.asset_class)}</span>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {asset.asset_key}/{asset.asset_subkey} · cond. {asset.condition_key}
+                      </div>
+                    </td>
+                    <td>
+                      <div>{asset.location_key === "EX" ? "Extranjero" : "España"}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        {asset.tax_territory_code ?? "ES-COMUN"} · {formatNumber(asset.ownership_percentage, 2)}%
+                      </div>
+                    </td>
+                    <td>
+                      <div>{formatCurrency(asset.valuation_1_eur, "EUR")}</div>
+                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                        Alta {new Date(asset.incorporation_date).toLocaleDateString("es-ES")}
+                      </div>
+                      {asset.valuation_2_eur !== null ? (
+                        <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                          Secundaria {formatCurrency(asset.valuation_2_eur, "EUR")}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      <div className={asset.supports_714 ? "badge success" : "badge"}>714</div>
+                      <div className={asset.supports_720 && asset.is_foreign ? "badge success" : "badge"} style={{ marginTop: "6px" }}>
+                        720
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Eventos fiscales canónicos</h2>
+        {!payload.canonical_registry_available ? (
+          <p className="muted">
+            El entorno actual no devuelve todavía eventos fiscales canónicos.
+          </p>
+        ) : payload.fiscal_events.length === 0 ? (
+          <p className="muted">
+            Aún no hay dividendos, intereses, transmisiones o ajustes normalizados en el registro canónico.
+          </p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Tipo</th>
+                  <th>Activo</th>
+                  <th>Importe</th>
+                  <th>Origen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.fiscal_events.map((event) => {
+                  const linkedAsset = payload.assets.find((asset) => asset.id === event.asset_id) ?? null;
+
+                  return (
+                    <tr key={event.id}>
+                      <td>
+                        <div>{new Date(event.event_date).toLocaleDateString("es-ES")}</div>
+                        <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                          {event.quantity !== null ? `${formatNumber(event.quantity)} unidades` : "Sin cantidad"}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={badgeClass(event.event_type)}>{event.event_type}</span>
+                      </td>
+                      <td>
+                        <strong>{linkedAsset?.display_name ?? "Activo no enlazado"}</strong>
+                        <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                          {linkedAsset?.asset_class ? assetClassLabel(linkedAsset.asset_class) : "Sin clase"}
+                        </div>
+                      </td>
+                      <td>
+                        <div>{eventAmountSummary(event)}</div>
+                        {event.withholding_amount_eur !== null ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Ret. {formatCurrency(event.withholding_amount_eur, event.currency)}
+                          </div>
+                        ) : null}
+                        {event.realized_result_eur !== null ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            Resultado {formatCurrency(event.realized_result_eur, event.currency)}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>
+                        <span className="badge">{event.source}</span>
+                        {event.notes ? (
+                          <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
+                            {event.notes}
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

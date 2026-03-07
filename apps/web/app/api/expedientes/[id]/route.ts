@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
 import { findClientCompat } from "@/lib/client-store";
+import { loadCanonicalRegistrySnapshot } from "@/lib/asset-registry-store";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
 import {
@@ -141,7 +142,7 @@ export async function GET(
     const resolvedExpediente = normalizeExpedienteId(params.id);
     await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "expedientes.read");
 
-    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, adjustmentsResult] = await Promise.all([
+    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, adjustmentsResult, canonicalRegistry] = await Promise.all([
       supabase
         .from(dbTables.expedientes)
         .select("id, reference, client_id, fiscal_year, model_type, title, status, created_at, updated_at")
@@ -180,7 +181,8 @@ export async function GET(
         )
         .eq("expediente_id", resolvedExpediente.id)
         .order("operation_date", { ascending: true })
-        .order("created_at", { ascending: true })
+        .order("created_at", { ascending: true }),
+      loadCanonicalRegistrySnapshot(supabase, resolvedExpediente.id)
     ]);
 
     if (
@@ -398,12 +400,20 @@ export async function GET(
         sales_pending: saleSummaries.filter((sale) => sale.status !== "MATCHED").length,
         blocked_losses: blockedLosses.length,
         adjustments_active: adjustmentsRows.filter((adjustment) => adjustment.status === "ACTIVE").length,
-        runtime_issues: runtimeIssues.length
+        runtime_issues: runtimeIssues.length,
+        assets_total: canonicalRegistry.assets.length,
+        assets_foreign: canonicalRegistry.assets.filter((asset) => asset.is_foreign).length,
+        assets_model_720: canonicalRegistry.assets.filter((asset) => asset.supports_720 && asset.is_foreign).length,
+        fiscal_events: canonicalRegistry.fiscalEvents.length
       },
+      canonical_registry_available: canonicalRegistry.available,
+      declaration_profile: canonicalRegistry.declarationProfile,
       documents: responseDocuments,
       operations: responseOperations,
       lots: responseLots,
       adjustments: adjustmentsRows.map(serializeFiscalAdjustment),
+      assets: canonicalRegistry.assets,
+      fiscal_events: canonicalRegistry.fiscalEvents,
       sale_summaries: saleSummaries,
       blocked_losses: blockedLosses,
       runtime_issues: runtimeIssues,
