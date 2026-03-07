@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir \
     pydantic>=2.10.0 \
     pypdf>=5.0.0 \
     pdfplumber>=0.11.0 \
+    openpyxl>=3.1.5 \
     httpx>=0.27.0 \
     openai>=1.51.0 \
     supabase>=2.7.4 \
@@ -30,7 +31,7 @@ EXPOSE 8000
 
 # Health check para Railway
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python3 -c "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('PORT', '8000')}/health\")" || exit 1
 
 # Comando de inicio con 2 workers para producción
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2"]

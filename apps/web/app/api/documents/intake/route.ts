@@ -11,6 +11,7 @@ import {
 } from "@/lib/auth";
 import type { ParseDocumentResponse, ProcessingStatus } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
+import { mimeTypeForDocumentSourceType } from "@/lib/document-source";
 import { normalizeExpedienteId, isUuid } from "@/lib/expediente-id";
 import { emitWorkflowEvent } from "@/lib/events";
 import { env } from "@/lib/env";
@@ -28,7 +29,7 @@ const intakeSchema = z.object({
       z.object({
         filename: z.string().min(2),
         storage_path: z.string().optional(),
-        source_type: z.enum(["PDF", "IMAGE", "CSV", "XLSX"]).optional(),
+        source_type: z.enum(["PDF", "IMAGE", "CSV", "XLSX", "DOCX"]).optional(),
         entity_hint: z.string().optional(),
         content_base64: z.string().optional()
       })
@@ -41,6 +42,7 @@ async function processWithParser(payload: {
   documentId: string;
   expedienteId: string;
   filename: string;
+  sourceType?: "PDF" | "IMAGE" | "CSV" | "XLSX" | "DOCX";
   storagePath?: string;
   contentBase64?: string;
   entityHint?: string;
@@ -101,9 +103,10 @@ async function processWithParser(payload: {
         document_id: payload.documentId,
         expediente_id: payload.expedienteId,
         filename: payload.filename,
+        source_type: payload.sourceType,
         content_base64: contentBase64,
         entity_hint: payload.entityHint,
-        mime_type: "application/pdf"
+        mime_type: mimeTypeForDocumentSourceType(payload.sourceType ?? "PDF")
       })
     });
 
@@ -135,12 +138,15 @@ async function processWithParser(payload: {
       version: 1,
       raw_payload: {
         warnings: parsed.warnings,
-        source_spans: parsed.source_spans
+        source_spans: parsed.source_spans,
+        source_type: payload.sourceType ?? "PDF",
+        structured_document: parsed.structured_document ?? null
       },
       normalized_payload: {
         records: parsed.records,
         parser_strategy: parsed.parser_strategy,
-        template_used: parsed.template_used
+        template_used: parsed.template_used,
+        source_type: payload.sourceType ?? "PDF"
       },
       confidence: parsed.confidence,
       requires_manual_review: parsed.requires_manual_review,
@@ -172,6 +178,8 @@ async function processWithParser(payload: {
         confidence: parsed.confidence,
         warnings: parsed.warnings,
         records: parsed.records.length,
+        source_type: payload.sourceType ?? "PDF",
+        structured_backend: parsed.structured_document?.backend ?? null,
         started_at: startedAt,
         completed_at: new Date().toISOString()
       }
@@ -331,6 +339,7 @@ export async function POST(request: Request) {
             documentId,
             expedienteId: resolvedExpediente.id,
             filename: document.filename,
+            sourceType: document.source_type,
             storagePath: document.storage_path,
             contentBase64: document.content_base64,
             entityHint: document.entity_hint

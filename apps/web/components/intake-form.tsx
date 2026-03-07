@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { inferDocumentSourceType, mimeTypeForDocumentSourceType } from "@/lib/document-source";
 
 type IntakeItem = {
   document_id: string;
@@ -205,7 +206,7 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
     event.preventDefault();
 
     if (selectedFiles.length === 0) {
-      setError("Selecciona al menos un fichero PDF.");
+      setError("Selecciona al menos un fichero PDF, CSV o Excel.");
       return;
     }
 
@@ -221,9 +222,13 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
 
     try {
       const filesForUpload = selectedFiles.map((file, index) => ({
+        source_type: inferDocumentSourceType(file.name, file.type),
         client_id: String(index),
         filename: file.name,
-        content_type: file.type || "application/pdf",
+        content_type: mimeTypeForDocumentSourceType(
+          inferDocumentSourceType(file.name, file.type),
+          file.type
+        ),
         size_bytes: file.size
       }));
 
@@ -259,8 +264,8 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
       }
 
       const documents = uploadPlan.uploads.map((upload) => ({
+        source_type: filesForUpload.find((file) => file.client_id === upload.client_id)?.source_type ?? "PDF",
         filename: upload.filename,
-        source_type: "PDF" as const,
         storage_path: upload.storage_path,
         entity_hint: entityHint || undefined
       }));
@@ -305,8 +310,8 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
     <section className="card">
       <h2>Ingesta de Documentos</h2>
       <p className="muted">
-        Sube hasta 20 PDFs bancarios (Pictet, Goldman Sachs, Citi u otros). Los ficheros se cargan
-        directamente a Supabase Storage y luego se encolan para parseo automático en Railway.
+        Sube hasta 20 documentos bancarios en PDF, CSV o Excel. Los ficheros se cargan directamente
+        a Supabase Storage y luego se encolan para parseo automático en Railway.
       </p>
 
       {boundClient ? (
@@ -348,12 +353,12 @@ export function IntakeForm({ expedienteId }: IntakeFormProps) {
       ) : null}
 
       <form className="form" onSubmit={handleSubmit}>
-        <label htmlFor="pdf-files">Archivos PDF (máx. 20)</label>
+        <label htmlFor="pdf-files">Archivos PDF, CSV o Excel (máx. 20)</label>
         <input
           ref={fileInputRef}
           id="pdf-files"
           type="file"
-          accept=".pdf,application/pdf"
+          accept=".pdf,.csv,.xlsx,.xls,application/pdf,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           multiple
           onChange={handleFileChange}
           disabled={submitting}

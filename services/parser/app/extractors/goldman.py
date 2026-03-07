@@ -53,10 +53,15 @@ RETENTION_PATTERN = re.compile(
 
 def _detect_section_type(text: str) -> Optional[str]:
     """Detecta el tipo de sección por su cabecera."""
-    lower = text.lower()
+    lower = " ".join(text.lower().split())
+    if parse_date(text) or extract_isin(text) or parse_amount(text) is not None:
+        return None
+
     for op_type, headers in GS_SECTION_HEADERS.items():
         for header in headers:
-            if header in lower:
+            is_prefixed = lower.startswith(f"{header}:") or lower.startswith(f"{header} -")
+            is_short_variant = lower.startswith(f"{header} ") and len(lower.split()) <= len(header.split()) + 2
+            if lower == header or is_prefixed or is_short_variant:
                 return op_type
     return None
 

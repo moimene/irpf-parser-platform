@@ -13,10 +13,12 @@ export type WorkflowEventType =
   | "parse.failed"
   | "manual.review.required";
 
+export type DocumentSourceType = "PDF" | "IMAGE" | "CSV" | "XLSX" | "DOCX";
+
 export interface IntakeDocumentInput {
   filename: string;
   storage_path?: string;
-  source_type?: "PDF" | "IMAGE" | "CSV" | "XLSX";
+  source_type?: DocumentSourceType;
   entity_hint?: string;
   content_base64?: string;
 }
@@ -59,11 +61,33 @@ export interface ParsedRecord {
   source_spans: SourceSpan[];
 }
 
+export interface StructuredTable {
+  table_id: string;
+  page: number;
+  source: string;
+  header: Array<string | null>;
+  rows: Array<Array<string | null>>;
+}
+
+export interface StructuredPage {
+  page: number;
+  text: string;
+  tables: StructuredTable[];
+}
+
+export interface StructuredDocument {
+  source_type: DocumentSourceType | "TEXT" | "UNKNOWN";
+  backend: "pdfplumber" | "csv" | "xlsx" | "text" | "docling" | "unknown";
+  pages: StructuredPage[];
+  metadata: Record<string, string | number | boolean | null>;
+}
+
 export interface ParseDocumentRequest {
   document_id: string;
   expediente_id: string;
   filename: string;
   mime_type?: string;
+  source_type?: DocumentSourceType;
   content_base64?: string;
   text?: string;
   entity_hint?: string;
@@ -78,6 +102,7 @@ export interface ParseDocumentResponse {
   requires_manual_review: boolean;
   records: ParsedRecord[];
   source_spans: SourceSpan[];
+  structured_document?: StructuredDocument | null;
   warnings: string[];
 }
 

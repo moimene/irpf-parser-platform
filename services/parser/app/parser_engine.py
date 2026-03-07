@@ -1,22 +1,27 @@
 """
 Motor de parseo adaptativo en 3 niveles:
   Nivel 1 — Plantillas por entidad (Pictet, Goldman Sachs, Citi) con pdfplumber
+  Nivel 1.5 — Extracción determinista desde structured_document
   Nivel 2 — Fallback LLM (GPT-4o-mini) para entidades desconocidas o baja extracción
   Nivel 3 — Escalado a revisión manual si confianza < umbral
 """
-import base64
-from io import BytesIO
 from typing import List, Optional, Tuple
 
 from app.extractors import base as base_utils
 from app.extractors import citi, goldman, pictet
-from app.extractors.base import ExtractedRecord, extract_text_from_pdf
+from app.extractors.base import ExtractedRecord
 from app.extractors.llm_fallback import extract as llm_extract
 from app.schemas import (
     ParseDocumentRequest,
     ParseDocumentResponse,
     ParsedRecord,
     SourceSpan,
+)
+from app.structured_document import (
+    build_structured_document,
+    flatten_structured_text,
+    infer_source_type,
+    iter_structured_lines,
 )
 
 MANUAL_REVIEW_THRESHOLD = 0.85
@@ -34,26 +39,16 @@ def detect_entity(filename: str, entity_hint: Optional[str], text: str) -> str:
     return "UNKNOWN"
 
 
-def decode_pdf_bytes(content_base64: Optional[str]) -> Optional[bytes]:
-    if not content_base64:
-        return None
-    try:
-        return base64.b64decode(content_base64)
-    except Exception:
-        return None
+def _template_prefix(entity: str) -> str:
+    return {
+        "PICTET": "pictet",
+        "GOLDMAN_SACHS": "goldman",
+        "CITI": "citi",
+    }.get(entity, "generic")
 
 
-def normalize_text(request: ParseDocumentRequest) -> Tuple[str, Optional[bytes]]:
-    if request.content_base64:
-        pdf_bytes = decode_pdf_bytes(request.content_base64)
-        if pdf_bytes:
-            pages_text, has_text = extract_text_from_pdf(pdf_bytes)
-            full_text = "\n".join(pages_text).strip()
-            return full_text, pdf_bytes
-        return "", None
-    if request.text and request.text.strip():
-        return request.text.strip(), None
-    return "", None
+def _template_name(entity: str, suffix: str) -> str:
+    return f"{_template_prefix(entity)}.{suffix}"
 
 
 def _make_source_span(text: str, keyword: str, page: int = 1) -> SourceSpan:
@@ -86,17 +81,55 @@ def _to_parsed_record(rec: ExtractedRecord, full_text: str) -> Tuple[ParsedRecor
     return parsed, span
 
 
-def _extract_from_text(entity: str, text: str) -> List[ExtractedRecord]:
-    """Extrae registros desde texto plano (sin PDF bytes) usando el extractor correcto."""
-    records = []
+def _build_record(
+    *,
+    line: str,
+    page: int,
+    op_type: str,
+    base_confidence: float,
+    template_name: str,
+    section: Optional[str] = None,
+    default_currency: Optional[str] = None,
+) -> ExtractedRecord:
+    return ExtractedRecord(
+        record_type=op_type,
+        operation_date=base_utils.parse_date(line),
+        isin=base_utils.extract_isin(line),
+        description=line[:120],
+        amount=base_utils.parse_amount(line),
+        currency=base_utils.extract_currency(line) or (default_currency or "EUR"),
+        retention=None,
+        quantity=None,
+        page=page,
+        row_text=line,
+        confidence=base_utils.confidence_from_fields(
+            base_utils.parse_date(line) is not None,
+            base_utils.parse_amount(line) is not None,
+            base_utils.extract_isin(line) is not None,
+            base_confidence,
+        ),
+        extra={
+            "template": template_name,
+            **({"section": section} if section else {}),
+        },
+    )
+
+
+def _extract_from_lines(
+    entity: str,
+    lines: List[Tuple[str, int]],
+    *,
+    template_name: str,
+) -> List[ExtractedRecord]:
+    records: List[ExtractedRecord] = []
+
     if entity == "GOLDMAN_SACHS":
-        import app.extractors.goldman as gs_mod
         current_section = None
-        for line in text.splitlines():
-            line = line.strip()
+        for raw_line, page in lines:
+            line = raw_line.strip()
             if len(line) < 10:
                 continue
-            section = gs_mod._detect_section_type(line)
+            section = goldman._detect_section_type(line)
             if section:
                 current_section = section
                 continue
@@ -105,30 +138,26 @@ def _extract_from_text(entity: str, text: str) -> List[ExtractedRecord]:
                 op_type, _ = base_utils.detect_operation_type(line)
                 if op_type == "DESCONOCIDO":
                     continue
-            records.append(ExtractedRecord(
-                record_type=op_type,
-                operation_date=base_utils.parse_date(line),
-                isin=base_utils.extract_isin(line),
-                description=line[:120],
-                amount=base_utils.parse_amount(line),
-                currency=base_utils.extract_currency(line) or "USD",
-                retention=None, quantity=None, page=1, row_text=line,
-                confidence=base_utils.confidence_from_fields(
-                    base_utils.parse_date(line) is not None,
-                    base_utils.parse_amount(line) is not None,
-                    base_utils.extract_isin(line) is not None,
-                    0.85 if current_section else 0.78,
-                ),
-                extra={"template": "goldman.text.v2", "section": current_section},
-            ))
-    elif entity == "CITI":
-        import app.extractors.citi as citi_mod
+            records.append(
+                _build_record(
+                    line=line,
+                    page=page,
+                    op_type=op_type,
+                    base_confidence=0.85 if current_section else 0.78,
+                    template_name=template_name,
+                    section=current_section,
+                    default_currency="USD",
+                )
+            )
+        return records
+
+    if entity == "CITI":
         current_section = None
-        for line in text.splitlines():
-            line = line.strip()
+        for raw_line, page in lines:
+            line = raw_line.strip()
             if len(line) < 10:
                 continue
-            section = citi_mod._detect_citi_section(line)
+            section = citi._detect_citi_section(line)
             if section:
                 current_section = section
                 continue
@@ -137,52 +166,50 @@ def _extract_from_text(entity: str, text: str) -> List[ExtractedRecord]:
                 op_type, _ = base_utils.detect_operation_type(line)
                 if op_type == "DESCONOCIDO":
                     continue
-            records.append(ExtractedRecord(
-                record_type=op_type,
-                operation_date=base_utils.parse_date(line),
-                isin=base_utils.extract_isin(line),
-                description=line[:120],
-                amount=base_utils.parse_amount(line),
-                currency=base_utils.extract_currency(line) or "USD",
-                retention=None, quantity=None, page=1, row_text=line,
-                confidence=base_utils.confidence_from_fields(
-                    base_utils.parse_date(line) is not None,
-                    base_utils.parse_amount(line) is not None,
-                    base_utils.extract_isin(line) is not None,
-                    0.83 if current_section else 0.75,
-                ),
-                extra={"template": "citi.text.v2", "section": current_section},
-            ))
-    else:  # PICTET o UNKNOWN
-        for line in text.splitlines():
-            line = line.strip()
-            if len(line) < 15:
-                continue
-            op_type, base_conf = base_utils.detect_operation_type(line)
-            if op_type == "DESCONOCIDO":
-                continue
-            records.append(ExtractedRecord(
-                record_type=op_type,
-                operation_date=base_utils.parse_date(line),
-                isin=base_utils.extract_isin(line),
-                description=line[:120],
-                amount=base_utils.parse_amount(line),
-                currency=base_utils.extract_currency(line),
-                retention=None, quantity=None, page=1, row_text=line,
-                confidence=base_utils.confidence_from_fields(
-                    base_utils.parse_date(line) is not None,
-                    base_utils.parse_amount(line) is not None,
-                    base_utils.extract_isin(line) is not None,
-                    base_conf - 0.05,
-                ),
-                extra={"template": "pictet.text.v2"},
-            ))
+            records.append(
+                _build_record(
+                    line=line,
+                    page=page,
+                    op_type=op_type,
+                    base_confidence=0.83 if current_section else 0.75,
+                    template_name=template_name,
+                    section=current_section,
+                    default_currency="USD",
+                )
+            )
+        return records
+
+    for raw_line, page in lines:
+        line = raw_line.strip()
+        if len(line) < 15:
+            continue
+        op_type, base_conf = base_utils.detect_operation_type(line)
+        if op_type == "DESCONOCIDO":
+            continue
+        confidence_base = base_conf + 0.02 if entity == "PICTET" else base_conf - 0.05
+        records.append(
+            _build_record(
+                line=line,
+                page=page,
+                op_type=op_type,
+                base_confidence=confidence_base,
+                template_name=template_name,
+            )
+        )
+
     return records
 
 
+def _extract_from_text(entity: str, text: str, *, template_name: str) -> List[ExtractedRecord]:
+    lines = [(line, 1) for line in text.splitlines()]
+    return _extract_from_lines(entity, lines, template_name=template_name)
+
+
 def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
-    warnings: List[str] = []
-    full_text, pdf_bytes = normalize_text(request)
+    structured_document, content_bytes, structure_warnings = build_structured_document(request)
+    warnings: List[str] = list(structure_warnings)
+    full_text = flatten_structured_text(structured_document)
+    source_type = infer_source_type(request)
     entity = detect_entity(request.filename, request.entity_hint, full_text)
 
     extracted_records: List[ExtractedRecord] = []
@@ -192,28 +219,53 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
     # Nivel 1: Plantillas por entidad
     if entity != "UNKNOWN":
         try:
-            if pdf_bytes:
+            if source_type == "PDF" and content_bytes:
                 if entity == "PICTET":
-                    extracted_records = pictet.extract(pdf_bytes)
+                    extracted_records = pictet.extract(content_bytes)
                     template_used = "pictet.v2"
                 elif entity == "GOLDMAN_SACHS":
-                    extracted_records = goldman.extract(pdf_bytes)
+                    extracted_records = goldman.extract(content_bytes)
                     template_used = "goldman.v2"
                 elif entity == "CITI":
-                    extracted_records = citi.extract(pdf_bytes)
+                    extracted_records = citi.extract(content_bytes)
                     template_used = "citi.v2"
             else:
-                extracted_records = _extract_from_text(entity, full_text)
-                template_used = f"{entity.lower()}.text.v2"
+                fallback_suffix = "structured.v1" if source_type in {"CSV", "XLSX"} else "text.v2"
+                extracted_records = _extract_from_lines(
+                    entity,
+                    iter_structured_lines(structured_document),
+                    template_name=_template_name(entity, fallback_suffix),
+                )
+                template_used = _template_name(entity, fallback_suffix)
 
             if extracted_records:
                 strategy = "template"
             else:
                 warnings.append(
-                    f"Plantilla {entity} reconocida pero sin registros; activando fallback LLM."
+                    f"Plantilla {entity} reconocida pero sin registros; activando extracción estructurada genérica."
                 )
         except Exception as exc:
             warnings.append(f"Error en extractor {entity}: {exc}")
+
+    # Nivel 1.5: Extracción determinista desde structured_document
+    if len(extracted_records) < MIN_RECORDS_FOR_SUCCESS and structured_document.pages:
+        structured_records = _extract_from_lines(
+            entity,
+            iter_structured_lines(structured_document),
+            template_name=(
+                _template_name(entity, "structured.v1")
+                if entity != "UNKNOWN"
+                else f"{str(source_type).lower()}.structured.v1"
+            ),
+        )
+        if structured_records:
+            extracted_records = structured_records
+            strategy = "template"
+            template_used = (
+                _template_name(entity, "structured.v1")
+                if entity != "UNKNOWN"
+                else f"{str(source_type).lower()}.structured.v1"
+            )
 
     # Nivel 2: Fallback LLM
     if len(extracted_records) < MIN_RECORDS_FOR_SUCCESS:
@@ -249,12 +301,11 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
             "enviando a validación manual."
         )
 
-    # Convertir a formato de salida
     parsed_records: List[ParsedRecord] = []
     all_spans: List[SourceSpan] = []
     for rec in extracted_records:
-        pr, span = _to_parsed_record(rec, full_text)
-        parsed_records.append(pr)
+        parsed_record, span = _to_parsed_record(rec, full_text)
+        parsed_records.append(parsed_record)
         all_spans.append(span)
 
     return ParseDocumentResponse(
@@ -266,5 +317,6 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
         requires_manual_review=requires_manual_review,
         records=parsed_records,
         source_spans=all_spans,
+        structured_document=structured_document,
         warnings=warnings,
     )
