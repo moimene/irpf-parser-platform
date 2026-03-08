@@ -2,12 +2,18 @@
 
 Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.md`
 
+## Estado operativo actual
+
+- App pública estabilizada en `main@5db75d8` y desplegada en `https://web-tan-mu-35.vercel.app`.
+- El perímetro estable de esta iteración es la web: auth, expediente, review, export y registro canónico editable.
+- El parser queda conscientemente fuera de esta estabilización; su revisión funcional profunda se hará en otra conversación y no debe mezclar cambios con la web pública mientras no cierre esa auditoría.
+
 ## Componentes PRD
 
 - **Extractor OCR Adaptativo**
   - Implementado: `services/parser/app/parser_engine.py`
-  - Estado: baseline con plantillas por entidad + fallback semantico + revision manual
-  - Gap actual: OCR real e ingesta completa de imagen/Excel siguen pendientes
+  - Estado: `structured_document` operativo, `CSV/XLSX` determinista, `PDF` estructurado y fallback semantico + revision manual
+  - Gap actual: falta la auditoria funcional profunda del parser y el cierre de OCR real / `DOCX` / `IMAGE` con backend documental mas rico
 
 - **Motor de Reglas**
   - Implementado: `packages/rules/src/index.ts`, `apps/web/lib/rules/validation.ts`
@@ -20,7 +26,7 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 
 - **Integrador RM / no cotizadas**
   - Implementado: base canonica en `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`
-  - Estado: el runtime ya soporta valores cotizados/no cotizados, IIC, seguros, inmuebles y bienes muebles; parser, review y expediente ya proyectan y editan ese registro manualmente
+  - Estado: el runtime ya soporta valores cotizados/no cotizados, IIC, seguros, inmuebles y bienes muebles; parser, review y expediente ya proyectan y editan ese registro manualmente, y el modelo `100` ya consume eventos canónicos de valores/IIC cuando existen
 
 ## APIs requeridas
 
@@ -54,10 +60,11 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 
 ## Gaps explicitos para proxima iteracion
 
-1. OCR real sobre PDF escaneado / imagen / Excel y backend documental mas rico para `structured_document`
-2. Cierre fiscal explicable y overrides avanzados sobre el runtime fiscal ya persistido
-3. Integracion oficial BOE y Registro Mercantil
-4. Export AEAT plenamente conforme por modelo y ejercicio usando el registro canonico como fuente de verdad mas alla del cierre base ya operativo en `100`
-5. SSO corporativo y gobierno operativo completo
-6. Trazabilidad estable de revision por celda/bbox y provenance auditable
-7. Patrimonio y configuracion como modulos completos de despacho
+1. Auditoria funcional profunda del parser sobre corpus real antes de tocar Railway producción
+2. OCR real sobre PDF escaneado / imagen / `DOCX` y backend documental mas rico para `structured_document`
+3. Cierre fiscal explicable y overrides avanzados sobre el runtime fiscal ya persistido
+4. Integracion oficial BOE y Registro Mercantil
+5. Export AEAT plenamente conforme por modelo y ejercicio usando el registro canonico como fuente de verdad mas alla del cierre base ya operativo en `100`
+6. SSO corporativo y gobierno operativo completo
+7. Trazabilidad estable de revision por celda/bbox y provenance auditable
+8. Patrimonio y configuracion como modulos completos de despacho

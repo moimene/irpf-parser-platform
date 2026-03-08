@@ -222,6 +222,18 @@ Siguiente foco del track:
 - `services/parser/app/parser_engine.py` emite ya `asset_records` y `fiscal_events` derivados.
 - `apps/web/app/api/documents/intake/route.ts` y `apps/web/app/api/review/[extraction_id]/route.ts` persisten esa proyeccion canonica al aceptar el documento, manteniendo en paralelo `irpf_operations`.
 
+## Actualizacion 2026-03-08 estabilizacion web publica
+
+- `origin/main` y la app pública quedan alineados en `5db75d8`.
+- Producción web vigente: `https://web-tan-mu-35.vercel.app`.
+- El perímetro estabilizado incluye:
+  - auth y operativa de despacho,
+  - review editable sobre `structured_document`,
+  - registro canónico editable en expediente,
+  - y modelo `100` cerrando sobre `irpf_asset_fiscal_events` para compras/ventas canónicas de valores e IIC, con fallback a `irpf_operations`.
+- El parser permanece activo en Railway pero queda explícitamente fuera del alcance de esta estabilización.
+- Cualquier revisión funcional profunda del parser debe hacerse en rama y conversación separadas antes de plantear cambios de runtime o despliegue en Railway.
+
 ### Track 5. Administracion y trazabilidad
 
 - Plantillas de extraccion.

@@ -1,8 +1,18 @@
 # IRPF Parser Platform
 
-**Última actualización:** 2026-03-06 | **Versión:** 0.4.0-beta
+**Última actualización:** 2026-03-08 | **Versión:** 0.5.0-beta
 
-Plataforma de despacho profesional para extracción, normalización y validación fiscal de extractos financieros. Transforma PDFs bancarios en datos estructurados listos para los modelos AEAT 100, 714 y 720.
+Plataforma de despacho profesional para extracción, normalización y validación fiscal de documentación financiera y patrimonial. Convierte documentos y ediciones manuales en un registro canónico operativo para los modelos AEAT 100, 714 y 720.
+
+---
+
+## Estado actual
+
+- **Web pública estabilizada:** [web-tan-mu-35.vercel.app](https://web-tan-mu-35.vercel.app)
+- **Git alineado con producción:** `origin/main` en commit `5db75d8`
+- **Registro canónico operativo:** perfil declarativo, activos `C/V/I/S/B/M` y eventos fiscales editables desde expediente
+- **Modelo 100:** prefiere `irpf_asset_fiscal_events` para compras y ventas canónicas de valores e IIC, con fallback a `irpf_operations`
+- **Parser:** sigue activo en producción, pero queda fuera del perímetro de esta estabilización; su revisión funcional profunda se hará en una conversación y rama aparte
 
 ---
 
@@ -49,18 +59,24 @@ Plataforma de despacho profesional para extracción, normalización y validació
 │                     RAILWAY (n8n + Parser)                  │
 │                                                             │
 │  n8n workflow: parse.started → Railway Parser → Vercel      │
-│  Parser FastAPI: /parse-document (Pictet, GS, Citi, JPM)   │
+│  Parser FastAPI: /parse-document → structured_document      │
+│  PDF estructurado + CSV/XLSX determinista + fallback review │
 └──────────────────┬──────────────────────────────────────────┘
                    │ persistencia
                    ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    SUPABASE (PostgreSQL)                    │
 │                                                             │
-│  Auth: auth.users + irpf_abogados (roles)                  │
-│  Datos: irpf_expedientes, irpf_documents, irpf_extractions  │
-│         irpf_operations, irpf_exports, irpf_audit_log       │
-│  Multi-cliente: irpf_clients, irpf_asignaciones             │
-│  Patrimonio: irpf_patrimonio, irpf_hojas, irpf_categorias   │
+│  Auth: auth.users + irpf_users                              │
+│  Operativa: irpf_clients, irpf_user_client_assignments      │
+│  Expediente: irpf_expedientes, irpf_documents,              │
+│              irpf_extractions, irpf_exports, irpf_audit_log │
+│  Runtime fiscal: irpf_operations, irpf_lots,                │
+│                  irpf_sale_allocations,                     │
+│                  irpf_fiscal_adjustments                    │
+│  Registro canónico: irpf_declaration_profiles,              │
+│                     irpf_asset_registry,                    │
+│                     irpf_asset_fiscal_events + subtables    │
 │  Config: irpf_entity_templates                              │
 │  Storage: bucket irpf-documents (PDFs originales)           │
 └─────────────────────────────────────────────────────────────┘
@@ -78,7 +94,7 @@ Plataforma de despacho profesional para extracción, normalización y validació
 | Base de datos | Supabase PostgreSQL con RLS |
 | Storage | Supabase Storage (bucket `irpf-documents`) |
 | Orquestación | n8n en Railway |
-| Parser | FastAPI en Railway (pdfplumber, pypdf) |
+| Parser | FastAPI en Railway (`structured_document`, `pdfplumber`, `openpyxl`, `xlrd`) |
 | Despliegue web | Vercel (monorepo, directorio raíz `apps/web`) |
 
 ---
@@ -95,16 +111,17 @@ irpf-parser-platform/
 │       │   ├── expedientes/    ← Flujo de ingesta y documentos
 │       │   ├── review/         ← Cola de revisión manual
 │       │   └── configuracion/  ← Plantillas de entidades
-│       ├── components/         ← IntakeForm, ReviewBoard, ExportGenerator
-│       ├── lib/                ← Supabase, Auth, AEAT, reglas fiscales
+│       ├── components/         ← Intake, review, export y workspace canónico
+│       ├── lib/                ← Supabase, Auth, AEAT, reglas fiscales, registro canónico
 │       └── middleware.ts       ← Protección de rutas
 ├── services/
 │   └── parser/                 ← FastAPI (Railway)
 │       └── app/
 │           ├── main.py         ← Endpoint /parse-document
-│           └── parser_engine.py ← Extractores por entidad
+│           ├── parser_engine.py ← Parseo y normalización
+│           └── structured_document.py ← Capa documental estructurada
 ├── infra/
-│   ├── supabase/migrations/    ← 5 migraciones SQL
+│   ├── supabase/migrations/    ← Migraciones runtime y modelo canónico
 │   └── n8n/workflows/          ← Workflow de orquestación
 ├── packages/
 │   ├── contracts/              ← Tipos TypeScript compartidos
@@ -199,6 +216,8 @@ npm run test:e2e --workspace apps/web
 
 El proyecto Vercel está configurado con `rootDirectory: apps/web`. El build se dispara automáticamente con cada push a `main`.
 
+La producción pública actual corresponde a `main@5db75d8`.
+
 ### Parser + n8n (Railway)
 
 ```bash
@@ -213,15 +232,35 @@ Guía completa: [`docs/vercel-mcp-n8n-railway-setup.md`](docs/vercel-mcp-n8n-rai
 
 ## Migraciones Supabase
 
-Las migraciones deben ejecutarse en orden desde el SQL Editor de Supabase:
+La base remota activa ya incluye las migraciones de auth moderna, runtime fiscal y registro canónico. Las piezas más relevantes del estado actual son:
 
-| Archivo | Descripción | Estado |
-|---|---|---|
-| `0001_init.sql` | Schema base inicial | Aplicada |
-| `20260305162000_irpf_parser_schema.sql` | Tablas `irpf_*` principales (7 tablas) | Aplicada |
-| `20260306100000_auth_rls_single_despacho.sql` | Auth + RLS + roles de abogados | Aplicada |
-| `20260306110000_superusuario_test.sql` | Usuario demo `demo@irpf-parser.dev` | Aplicada |
-| `20260306120000_plataforma_patrimonio.sql` | Tablas multi-cliente y patrimonio (7 tablas) | Aplicada |
+| Archivo | Descripción |
+|---|---|
+| `20260307100000_finalize_dispatch_auth_migration.sql` | auth real de despacho y retirada del fallback legacy |
+| `20260307134212_irpf_fiscal_adjustments_runtime_module.sql` | ajustes fiscales manuales |
+| `20260307160000_irpf_lots_runtime_module.sql` | lotes y runtime FIFO |
+| `20260307210000_irpf_canonical_asset_registry.sql` | registro canónico de bienes/derechos y eventos fiscales |
+| `20260307233000_irpf_capital_operation_catalog.sql` | catálogo granular de operaciones de capital |
+
+Referencia operativa consolidada: [docs/BASELINE_FUNCIONAL_2026-03-06.md](docs/BASELINE_FUNCIONAL_2026-03-06.md)
+
+---
+
+## Perímetro estabilizado
+
+Lo que queda explícitamente estabilizado en esta iteración:
+
+- web pública
+- auth y operativa de despacho
+- expediente, review y export base
+- registro canónico editable
+- runtime fiscal de `100` sobre fuente canónica o legacy según disponibilidad
+
+Lo que queda deliberadamente fuera de esta estabilización:
+
+- revisión funcional profunda del parser
+- cambios de dependencias Python o `uv.lock`
+- redeploy del parser sin auditoría previa específica
 
 ---
 
