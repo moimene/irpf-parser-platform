@@ -14,6 +14,7 @@ type ExportResult = {
  artifact_hash: string;
  generated_at: string;
  messages: string[];
+ runtime_source?: "irpf_asset_fiscal_events" | "irpf_operations" | null;
  runtime_issues?: Array<{
  code: string;
  operation_id: string;
@@ -193,6 +194,12 @@ export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
  ))}
  </ul>
  )}
+ {result.model === "100" && result.runtime_source ? (
+ <p className="muted" style={{ marginTop: "8px", fontSize: "0.85rem" }}>
+ Runtime fiscal:{" "}
+ <code>{result.runtime_source === "irpf_asset_fiscal_events" ? "irpf_asset_fiscal_events" : "irpf_operations"}</code>
+ </p>
+ ) : null}
  {result.runtime_issues && result.runtime_issues.length > 0 ? (
  <div style={{ marginTop: "12px" }}>
  <p className="muted" style={{ marginBottom: "8px" }}>

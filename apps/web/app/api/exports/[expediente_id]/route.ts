@@ -4,33 +4,12 @@ import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurre
 import { isExportModel, type ExportModel } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
-import {
-  detectBlockedLossesFromFiscalRuntime,
-  deriveFiscalRuntimeFromOperations,
-  type RuntimeOperationRow
-} from "@/lib/lots";
-import type { FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
+import { loadModel100Runtime } from "@/lib/model100-runtime";
 import { validateModel100, validateModel714, validateModel720 } from "@/lib/rules/validation";
 import { sha256 } from "@/lib/hash";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
-
-interface OperationRow {
-  id: string;
-  expediente_id: string;
-  isin: string | null;
-  operation_type: "COMPRA" | "VENTA";
-  operation_date: string;
-  description: string | null;
-  amount: number | string | null;
-  currency: string | null;
-  quantity: number | string | null;
-  realized_gain: number | string | null;
-  source: "AUTO" | "MANUAL" | "IMPORTACION_EXCEL";
-  manual_notes: string | null;
-  created_at?: string;
-}
 
 interface AssetValidationRow {
   id: string;
@@ -43,51 +22,6 @@ interface AssetValidationRow {
 
 function toModelExtension(model: ExportModel): string {
   return model;
-}
-
-async function loadModel100Runtime(
-  supabase: SupabaseClient,
-  expedienteId: string
-): Promise<{
-  saleSummaries: ReturnType<typeof deriveFiscalRuntimeFromOperations>["saleSummaries"];
-  blockedLosses: ReturnType<typeof detectBlockedLossesFromFiscalRuntime>;
-  issues: ReturnType<typeof deriveFiscalRuntimeFromOperations>["issues"];
-}> {
-  const [operationsResult, adjustmentsResult] = await Promise.all([
-    supabase
-      .from(dbTables.operations)
-      .select(
-        "id, expediente_id, isin, operation_type, operation_date, description, amount, currency, quantity, realized_gain, source, manual_notes, created_at"
-      )
-      .eq("expediente_id", expedienteId)
-      .in("operation_type", ["COMPRA", "VENTA"]),
-    supabase
-      .from(dbTables.fiscalAdjustments)
-      .select(
-        "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
-      )
-      .eq("expediente_id", expedienteId)
-  ]);
-
-  if (operationsResult.error || adjustmentsResult.error) {
-    throw new Error(
-      `No se pudo cargar el runtime fiscal del modelo 100: ${
-        operationsResult.error?.message ?? adjustmentsResult.error?.message ?? "error desconocido"
-      }`
-    );
-  }
-
-  const runtime = deriveFiscalRuntimeFromOperations({
-    expedienteId,
-    operations: (operationsResult.data ?? []) as OperationRow[],
-    adjustments: (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[]
-  });
-
-  return {
-    saleSummaries: runtime.saleSummaries,
-    blockedLosses: runtime.blockedLosses,
-    issues: runtime.issues
-  };
 }
 
 function isMissingRelation(errorMessage: string | undefined): boolean {
@@ -220,9 +154,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
 
     const adjustmentIssues =
       model === "100"
-        ? (model100Runtime?.issues.filter(
-            (issue) => issue.code.startsWith("adjustment_") || issue.code.startsWith("transfer_out_")
-          ) ?? [])
+        ? (model100Runtime?.issues ?? [])
         : [];
 
     const validation =
@@ -240,6 +172,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
         generatedAt,
         validation,
         sales: model100Runtime?.saleSummaries.length ?? 0,
+        runtimeSource: model100Runtime?.source ?? null,
         assets: canonicalAssetRows?.length ?? 0
       })
     );
@@ -254,6 +187,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       artifact_hash: artifactHash,
       generated_at: generatedAt,
       messages: validation.messages,
+      runtime_source: model100Runtime?.source ?? null,
       blocked_losses: model100Runtime?.blockedLosses ?? [],
       runtime_issues: adjustmentIssues,
       assets_count: canonicalAssetRows?.length ?? 0,
@@ -279,6 +213,7 @@ export async function GET(request: Request, context: { params: { expediente_id: 
       payload: {
         messages: validation.messages,
         sales_count: model100Runtime?.saleSummaries.length ?? 0,
+        runtime_source: model100Runtime?.source ?? null,
         assets_count: canonicalAssetRows?.length ?? 0,
         blocked_losses: model100Runtime?.blockedLosses ?? [],
         runtime_issues: adjustmentIssues,

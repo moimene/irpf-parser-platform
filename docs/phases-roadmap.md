@@ -40,6 +40,11 @@ Iniciada:
 - Deteccion y trazabilidad de perdidas bloqueadas por recompra en expediente, alerts y preview del modelo 100
 - Validacion de modelo 100 basada en runtime fiscal real, no en `realized_gain` raw del parser
 - Ajustes manuales de coste, herencia y transferencia persistidos en runtime y operables desde expediente
+- Registro canonico editable en expediente:
+  - perfil declarativo,
+  - activos `C/V/I/S/B/M`,
+  - eventos fiscales manuales,
+  - y precarga desde borradores de `review`
 
 Pendiente para cerrar:
 
@@ -52,6 +57,7 @@ Fase 2 queda abierta con la primera slice vertical ya operativa.
 ## Fase 3 Patrimonio e IP
 
 - Base canonica de bienes/derechos y eventos fiscales introducida
+- CRUD manual del registro canonico ya operativo en expediente
 - Cuentas financieras y posiciones a cierre
 - Tipos de cambio y saldo medio trimestral
 - Modulo de patrimonio

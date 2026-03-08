@@ -506,3 +506,40 @@ Validacion ejecutada:
   - `npm run lint --workspace apps/web`
   - `npm run build --workspace apps/web`
   - `cd apps/web && npx playwright test e2e/asset-registry.spec.ts e2e/canonical-registry.spec.ts` -> `4 passed`
+
+## Actualizacion 2026-03-08 edicion manual del registro canonico
+
+- La UI de expediente deja de ser solo lectura para patrimonio e informativas:
+  - existe ya workspace de perfil declarativo,
+  - alta/edicion/borrado de activos canonicos,
+  - alta/edicion/borrado de eventos fiscales,
+  - y precarga desde borradores pendientes de `review`.
+- Nuevas rutas operativas:
+  - `GET|PUT /api/expedientes/:id/canonical`
+  - `POST /api/expedientes/:id/assets`
+  - `PATCH|DELETE /api/expedientes/:id/assets/:asset_id`
+  - `POST /api/expedientes/:id/fiscal-events`
+  - `PATCH|DELETE /api/expedientes/:id/fiscal-events/:event_id`
+- Reglas ya cubiertas en backend:
+  - coherencia `ES/EX` con `codigo_pais`,
+  - origen/extincion,
+  - campos obligatorios por `C`, `V`, `I`, `S`, `B`, `M`,
+  - y requisitos por operacion de capital.
+- Esto deja operativa la captura manual de:
+  - cuentas,
+  - valores cotizados y no cotizados,
+  - IIC reguladas o no,
+  - seguros y rentas,
+  - inmuebles,
+  - bienes muebles,
+  - dividendos, intereses, rentas, transmisiones y retenciones.
+- Verificacion ejecutada en esta slice:
+  - `npm run typecheck --workspace apps/web`
+  - `npm run lint --workspace apps/web`
+  - `npm run build --workspace apps/web`
+  - `cd apps/web && npx playwright test e2e/asset-registry.spec.ts e2e/canonical-registry.spec.ts e2e/canonical-registry-workspace.spec.ts` -> `7 passed`
+  - `cd apps/web && npx playwright test` -> `20 passed, 6 skipped`
+- Limitacion vigente:
+  - `714` y `720` ya pueden apoyarse en este registro editable.
+  - la parte `100` ya prefiere `irpf_asset_fiscal_events` para compras/ventas canónicas de valores e IIC, con fallback a `irpf_operations` si ese registro aún no aporta runtime FIFO suficiente.
+  - siguen pendientes los casos patrimoniales no FIFO y un export `100` más rico que el layout simplificado actual.

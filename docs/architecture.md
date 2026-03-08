@@ -129,9 +129,14 @@ Nueva capacidad operativa del registro canonico:
   - bienes muebles matriculados,
   - bienes muebles situados,
   - manteniendo compatibilidad retroactiva con `COLLECTION`.
-- La siguiente frontera ya no es de lectura sino de mutacion:
-  - altas manuales,
-  - correcciones manuales,
-  - y workflow de edicion directa del registro canonico.
+- La mutacion manual del registro canonico ya queda operativa:
+  - `GET|PUT /api/expedientes/:id/canonical` sirve perfil declarativo, catalogos AEAT y borradores de `review`.
+  - `POST /api/expedientes/:id/assets` y `PATCH|DELETE /api/expedientes/:id/assets/:asset_id` gestionan activos canonicos.
+  - `POST /api/expedientes/:id/fiscal-events` y `PATCH|DELETE /api/expedientes/:id/fiscal-events/:event_id` gestionan rentas, transmisiones y retenciones manuales.
+  - `apps/web/components/canonical-registry-workspace.tsx` unifica esa operativa dentro del expediente con precarga desde review.
+- Limitacion vigente tras esta slice:
+  - `714` y `720` ya pueden apoyarse en el registro canonico editable.
+  - el modelo `100` ya prefiere `irpf_asset_fiscal_events` para compras/ventas de valores e IIC y hace fallback a `irpf_operations` cuando el registro canonico aun no aporta eventos FIFO suficientes.
+  - el cierre `100` fuera de valores/IIC sigue necesitando una capa patrimonial/fiscal mas rica que el export simplificado actual.
 
 La referencia de alcance consolidado es `docs/BASELINE_FUNCIONAL_2026-03-06.md`.

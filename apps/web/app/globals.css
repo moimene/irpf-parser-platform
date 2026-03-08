@@ -515,6 +515,94 @@ td {
   align-items: start;
 }
 
+.workspace-header,
+.workspace-header-inline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace-summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.canonical-workspace {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.canonical-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.workspace-panel {
+  border: 1px solid var(--g-border-subtle);
+  border-radius: var(--g-radius-lg);
+  padding: 14px;
+  background: color-mix(in srgb, var(--g-surface-card) 86%, var(--g-surface-subtle));
+  display: grid;
+  gap: 12px;
+}
+
+.canonical-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.canonical-form-grid .workspace-note,
+.canonical-form-grid .workspace-actions-row,
+.canonical-form-grid .checkbox-row {
+  grid-column: 1 / -1;
+}
+
+.workspace-note {
+  border: 1px dashed var(--g-border-default);
+  border-radius: var(--g-radius-md);
+  padding: 10px;
+  background: color-mix(in srgb, var(--g-surface-card) 82%, var(--g-surface-muted));
+  font-size: 0.8rem;
+}
+
+.workspace-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.table-actions button {
+  padding: 7px 10px;
+  font-size: 0.76rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--g-border-subtle);
+  border-radius: var(--g-radius-md);
+  background: var(--g-surface-card);
+}
+
+.checkbox-row input {
+  width: auto;
+  margin: 0;
+}
+
 .review-sidebar,
 .review-main {
   display: grid;
@@ -743,7 +831,8 @@ td {
   }
 
   .review-workspace,
-  .review-detail-grid {
+  .review-detail-grid,
+  .canonical-grid {
     grid-template-columns: 1fr;
   }
 
@@ -759,7 +848,8 @@ td {
   }
 
   .kpi-grid,
-  .stack {
+  .stack,
+  .canonical-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -790,7 +880,8 @@ td {
 
   .kpi-grid,
   .stack,
-  .sidebar-nav {
+  .sidebar-nav,
+  .canonical-form-grid {
     grid-template-columns: 1fr;
   }
 
@@ -798,11 +889,17 @@ td {
   .review-sidebar-header,
   .review-page-card-header,
   .review-record-tab,
-  .review-queue-item-header {
+  .review-queue-item-header,
+  .workspace-header,
+  .workspace-header-inline {
     flex-direction: column;
   }
 
   .review-action-buttons {
     justify-content: stretch;
+  }
+
+  .workspace-summary-chips {
+    justify-content: flex-start;
   }
 }

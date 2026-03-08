@@ -20,7 +20,7 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 
 - **Integrador RM / no cotizadas**
   - Implementado: base canonica en `infra/supabase/migrations/20260307210000_irpf_canonical_asset_registry.sql`
-  - Estado: el runtime ya soporta valores cotizados/no cotizados, IIC, seguros, inmuebles y bienes muebles; falta conectarlo al parser y a la UI operativa
+  - Estado: el runtime ya soporta valores cotizados/no cotizados, IIC, seguros, inmuebles y bienes muebles; parser, review y expediente ya proyectan y editan ese registro manualmente
 
 ## APIs requeridas
 
@@ -38,6 +38,9 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 - `GET /api/review/:extraction_id` -> implementada
 - `PATCH /api/review/:extraction_id` -> implementada
 - `POST /api/access/users` -> implementada
+- `GET|PUT /api/expedientes/:id/canonical` -> implementada
+- `POST|PATCH|DELETE /api/expedientes/:id/assets*` -> implementada
+- `POST|PATCH|DELETE /api/expedientes/:id/fiscal-events*` -> implementada
 
 ## Historias criticas cubiertas
 
@@ -54,7 +57,7 @@ Referencia principal de estado consolidado: `docs/BASELINE_FUNCIONAL_2026-03-06.
 1. OCR real sobre PDF escaneado / imagen / Excel y backend documental mas rico para `structured_document`
 2. Cierre fiscal explicable y overrides avanzados sobre el runtime fiscal ya persistido
 3. Integracion oficial BOE y Registro Mercantil
-4. Export AEAT plenamente conforme por modelo y ejercicio usando el registro canonico como fuente de verdad
+4. Export AEAT plenamente conforme por modelo y ejercicio usando el registro canonico como fuente de verdad mas alla del cierre base ya operativo en `100`
 5. SSO corporativo y gobierno operativo completo
 6. Trazabilidad estable de revision por celda/bbox y provenance auditable
 7. Patrimonio y configuracion como modulos completos de despacho

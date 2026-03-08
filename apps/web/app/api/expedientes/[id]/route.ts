@@ -5,11 +5,10 @@ import { loadCanonicalRegistrySnapshot } from "@/lib/asset-registry-store";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
 import {
-  detectBlockedLossesFromFiscalRuntime,
-  deriveFiscalRuntimeFromOperations,
   type FiscalRuntimeIssue,
   type RuntimeOperationRow
 } from "@/lib/lots";
+import { buildModel100Runtime } from "@/lib/model100-runtime";
 import { serializeFiscalAdjustment, type FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
@@ -85,7 +84,7 @@ type LotRow = {
   created_at: string;
 };
 
-type BlockedLossRow = ReturnType<typeof detectBlockedLossesFromFiscalRuntime>[number];
+type BlockedLossRow = ReturnType<typeof buildModel100Runtime>["blockedLosses"][number];
 type RuntimeIssueRow = FiscalRuntimeIssue;
 
 type ExpedienteRow = {
@@ -300,7 +299,7 @@ export async function GET(
       manual_notes: row.manual_notes
     }));
 
-    const responseLots = lotsRows.map((row) => ({
+    const persistedLots = lotsRows.map((row) => ({
       id: row.id,
       acquisition_operation_id: row.acquisition_operation_id,
       isin: row.isin,
@@ -318,11 +317,32 @@ export async function GET(
       transfers_count: countLotTransfers(row.metadata)
     }));
 
-    const runtime = deriveFiscalRuntimeFromOperations({
+    const runtime = buildModel100Runtime({
       expedienteId: resolvedExpediente.id,
-      operations: operationsRows as RuntimeOperationRow[],
+      canonicalRegistry,
+      legacyOperations: operationsRows as RuntimeOperationRow[],
       adjustments: adjustmentsRows
     });
+    const responseLots =
+      runtime.source === "irpf_asset_fiscal_events"
+        ? runtime.lots.map((lot) => ({
+            id: lot.id,
+            acquisition_operation_id: lot.acquisition_operation_id,
+            isin: lot.isin,
+            description: lot.description,
+            acquisition_date: lot.acquisition_date,
+            quantity_original: lot.quantity_original,
+            quantity_open: lot.quantity_open,
+            quantity_sold: lot.quantity_sold,
+            unit_cost: lot.unit_cost,
+            total_cost: lot.total_cost,
+            currency: lot.currency,
+            status: lot.status,
+            source: lot.source,
+            sales_count: countLotSales(lot.metadata),
+            transfers_count: countLotTransfers(lot.metadata)
+          }))
+        : persistedLots;
 
     const saleSummaries = runtime.saleSummaries.map((summary) => ({
       sale_operation_id: summary.sale_operation_id,
@@ -407,6 +427,7 @@ export async function GET(
         fiscal_events: canonicalRegistry.fiscalEvents.length
       },
       canonical_registry_available: canonicalRegistry.available,
+      runtime_source: runtime.source,
       declaration_profile: canonicalRegistry.declarationProfile,
       documents: responseDocuments,
       operations: responseOperations,

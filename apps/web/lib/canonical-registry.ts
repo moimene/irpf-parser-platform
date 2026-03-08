@@ -1091,7 +1091,7 @@ function isMissingRelation(errorMessage: string | undefined): boolean {
   return Boolean(errorMessage && /does not exist|relation .* does not exist/i.test(errorMessage));
 }
 
-async function ensureDeclarationProfile(
+export async function ensureDeclarationProfile(
   supabase: SupabaseClient,
   expedienteId: string
 ): Promise<string | null> {

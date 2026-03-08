@@ -7,13 +7,9 @@
 import { NextResponse } from "next/server";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
 import type { CanonicalAssetRecord, MovableAssetKind } from "@/lib/asset-registry";
-import {
-  deriveFiscalRuntimeFromOperations,
-  type RuntimeOperationRow
-} from "@/lib/lots";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
-import type { FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
+import { loadModel100Runtime } from "@/lib/model100-runtime";
 import { toAeatRecord } from "@/lib/operations";
 import { validateModel100 } from "@/lib/rules/validation";
 import { createSupabaseAdminClient } from "@/lib/supabase";
@@ -337,48 +333,35 @@ export async function GET(
     const resolvedExpediente = normalizeExpedienteId(params.expediente_id);
     await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "exports.generate");
 
-    const [operationsResult, adjustmentsResult, canonicalAssets] = await Promise.all([
-      supabase
-        .from(dbTables.operations)
-        .select(
-          "id, expediente_id, isin, operation_type, operation_date, quantity, realized_gain, description, amount, currency, retention, origin_trace, manual_notes, source, created_at"
-        )
-        .eq("expediente_id", resolvedExpediente.id)
-        .order("operation_date", { ascending: true }),
+    const [operationsResult, canonicalAssets, model100Runtime] = await Promise.all([
       modelParam === "100"
-        ? supabase
-            .from(dbTables.fiscalAdjustments)
+        ? Promise.resolve({ data: [] as OperationRow[], error: null })
+        : supabase
+            .from(dbTables.operations)
             .select(
-              "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
+              "id, expediente_id, isin, operation_type, operation_date, quantity, realized_gain, description, amount, currency, retention, origin_trace, manual_notes, source, created_at"
             )
             .eq("expediente_id", resolvedExpediente.id)
-        : Promise.resolve({ data: [] as FiscalAdjustmentRow[], error: null }),
+            .order("operation_date", { ascending: true }),
       modelParam === "100"
         ? Promise.resolve(null)
-        : loadCanonicalAssetsForExport(supabase, resolvedExpediente.id)
+        : loadCanonicalAssetsForExport(supabase, resolvedExpediente.id),
+      modelParam === "100"
+        ? loadModel100Runtime(supabase, resolvedExpediente.id)
+        : Promise.resolve(null)
     ]);
 
-    if (operationsResult.error || adjustmentsResult.error) {
+    if (operationsResult.error) {
       return NextResponse.json(
         {
-          error: `No se pudieron cargar operaciones: ${
-            operationsResult.error?.message ?? adjustmentsResult.error?.message
-          }`
+          error: `No se pudieron cargar operaciones: ${operationsResult.error.message}`
         },
         { status: 500 }
       );
     }
 
     const rows = (operationsResult.data ?? []) as OperationRow[];
-    const runtime =
-      modelParam === "100"
-        ? deriveFiscalRuntimeFromOperations({
-            expedienteId: resolvedExpediente.id,
-            operations: rows as RuntimeOperationRow[],
-            adjustments: (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[]
-          })
-        : null;
-    const saleSummaries = runtime?.saleSummaries ?? [];
+    const saleSummaries = model100Runtime?.saleSummaries ?? [];
 
     if (modelParam === "100") {
       const baseValidation = validateModel100({
@@ -386,12 +369,9 @@ export async function GET(
         unresolvedSales: saleSummaries.filter((sale) => sale.status === "UNRESOLVED").length,
         pendingCostBasisSales: saleSummaries.filter((sale) => sale.status === "PENDING_COST_BASIS").length,
         invalidSales: saleSummaries.filter((sale) => sale.status === "INVALID_DATA").length,
-        blockedLossesCount: runtime?.blockedLosses.length ?? 0
+        blockedLossesCount: model100Runtime?.blockedLosses.length ?? 0
       });
-      const adjustmentIssues =
-        runtime?.issues.filter(
-          (issue) => issue.code.startsWith("adjustment_") || issue.code.startsWith("transfer_out_")
-        ) ?? [];
+      const adjustmentIssues = model100Runtime?.issues ?? [];
       const validation =
         adjustmentIssues.length > 0
           ? {
@@ -438,9 +418,9 @@ export async function GET(
         : records.length;
 
     await supabase.from(dbTables.auditLog).insert({
-      expediente_id: resolvedExpediente.id,
-      user_id: sessionUser.reference,
-      action: `export.download.${modelParam}`,
+        expediente_id: resolvedExpediente.id,
+        user_id: sessionUser.reference,
+        action: `export.download.${modelParam}`,
       entity_type: "export",
       entity_id: resolvedExpediente.id,
       after_data: {
@@ -448,9 +428,11 @@ export async function GET(
         records_count: exportedItemsCount,
         assets_count: canonicalAssets?.length ?? 0,
         export_source:
-          modelParam !== "100" && canonicalAssets && canonicalAssets.length > 0
-            ? "irpf_asset_registry"
-            : "irpf_operations",
+          modelParam === "100"
+            ? (model100Runtime?.source ?? "irpf_operations")
+            : modelParam !== "100" && canonicalAssets && canonicalAssets.length > 0
+              ? "irpf_asset_registry"
+              : "irpf_operations",
         ejercicio,
         nif_masked: nif.slice(0, 3) + "****" + nif.slice(-1)
       }
