@@ -1,269 +1,584 @@
 "use client";
-import { useState } from "react";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { summarizeCanonicalAssets } from "@/lib/canonical-exports";
+import type { FiscalUnitRecord } from "@/lib/client-store";
+import {
+  expedienteModelLabel,
+  exportModelForExpediente,
+  exportModelLabel,
+  isExpedienteModelType
+} from "@/lib/expediente-models";
+import type { OperationalDownloadFormat } from "@/lib/export-operational";
+import type { CanonicalAssetSummary } from "@/lib/fiscal-canonical";
+import type { FilingDecision } from "@/lib/model-filing-rules";
+import { evaluateModelPreparation } from "@/lib/model-preparation";
+import type { CanonicalApprovalStatus } from "@/lib/expediente-workflow";
 
 interface ExportGeneratorProps {
- expedienteId: string;
+  expedienteId: string;
 }
 
 type ExportResult = {
- expediente_id: string;
- model: "100" | "714" | "720";
- status: string;
- validation_state: "ok" | "warnings" | "errors";
- artifact_path: string;
- artifact_hash: string;
- generated_at: string;
- messages: string[];
- runtime_source?: "irpf_asset_fiscal_events" | "irpf_operations" | null;
- runtime_issues?: Array<{
- code: string;
- operation_id: string;
- isin?: string | null;
- quantity?: number | null;
- message: string;
- }>;
- blocked_losses?: Array<{
- sale_operation_id: string;
- blocked_by_buy_operation_id: string;
- isin: string;
- sale_date: string;
- blocked_by_buy_date: string;
- window_months: number;
- realized_loss: number | null;
- currency: string | null;
- }>;
+  expediente_id: string;
+  expediente_reference: string;
+  fiscal_year: number;
+  model_type: string;
+  model: "100" | "714" | "720";
+  status: string;
+  validation_state: "ok" | "warnings" | "errors";
+  artifact_path: string;
+  artifact_hash: string;
+  generated_at: string;
+  messages: string[];
+  filing_decision?: FilingDecision | null;
+  aeat_allowed?: boolean;
+  available_download_formats?: OperationalDownloadFormat[];
 };
 
-function formatCurrency(value: number | null, currency: string | null | undefined): string {
- if (value === null) {
- return "-";
- }
+type ExpedienteContext = {
+  expediente_reference: string;
+  fiscal_year: number;
+  model_type: string;
+  canonical_runtime_mode?: "persisted" | "derived";
+  workflow: {
+    canonical_approval_status: CanonicalApprovalStatus;
+    filing_status: "draft" | "ready" | "filed";
+    workflow_owner_name: string | null;
+    pending_task: string | null;
+  };
+  counts: {
+    total: number;
+    manual_review: number;
+    failed: number;
+    assets: number;
+    operations: number;
+    sales_pending: number;
+    exports: number;
+    missing_ownership_assets?: number;
+    missing_foreign_country_assets?: number;
+    missing_foreign_block_assets?: number;
+    missing_foreign_q4_assets?: number;
+    threshold_reached_blocks?: number;
+  };
+  assets: CanonicalAssetSummary[];
+  client: {
+    reference: string;
+    display_name: string;
+    nif: string;
+    fiscal_unit: FiscalUnitRecord;
+  } | null;
+  exports: Array<{
+    id: string;
+    model: "100" | "714" | "720";
+    status: string;
+    validation_state: string;
+    artifact_path: string;
+    filing_decision?: FilingDecision | null;
+    aeat_allowed?: boolean | null;
+    messages?: string[];
+    generated_at: string;
+  }>;
+};
 
- const resolvedCurrency = currency?.trim().toUpperCase() || "EUR";
+function validationBadgeClass(value: string): string {
+  if (value === "ok") return "badge success";
+  if (value === "warnings") return "badge warning";
+  return "badge danger";
+}
 
- try {
- return new Intl.NumberFormat("es-ES", {
- style: "currency",
- currency: resolvedCurrency,
- minimumFractionDigits: 2,
- maximumFractionDigits: 2
- }).format(value);
- } catch {
- return `${value.toFixed(2)} ${resolvedCurrency}`;
- }
+function checklistBadgeClass(value: "ok" | "warning" | "blocked"): string {
+  if (value === "ok") return "badge success";
+  if (value === "warning") return "badge warning";
+  return "badge danger";
+}
+
+function formatDate(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleString("es-ES") : "Sin actividad";
+}
+
+function operationalModelCopy(model: "100" | "714" | "720" | null): string {
+  if (model === "100") {
+    return "Modelo 100: controla transmisiones, ganancias y pérdidas antes del cierre AEAT.";
+  }
+
+  if (model === "714") {
+    return "Modelo 714: exige valoración patrimonial suficiente sobre activos consolidados.";
+  }
+
+  if (model === "720") {
+    return "Modelo 720: exige bienes en el extranjero identificados y valorados.";
+  }
+
+  return "El expediente no tiene un modelo declarativo compatible.";
+}
+
+function downloadFilename(
+  format: OperationalDownloadFormat,
+  model: "100" | "714" | "720",
+  expedienteReference: string,
+  fiscalYear: number | undefined
+): string {
+  const year = fiscalYear ?? "";
+
+  if (format === "report") {
+    return `MODELO_${model}_${expedienteReference}_${year}_informe.txt`;
+  }
+
+  if (format === "xls") {
+    return `MODELO_${model}_${expedienteReference}_${year}_operativo.xls`;
+  }
+
+  return `MODELO_${model}_${expedienteReference}_${year}.${model}`;
 }
 
 export function ExportGenerator({ expedienteId }: ExportGeneratorProps) {
- const [model, setModel] = useState<"100" | "714" | "720">("100");
- const [nif, setNif] = useState("");
- const [ejercicio, setEjercicio] = useState(new Date().getFullYear().toString());
- const [loading, setLoading] = useState(false);
- const [result, setResult] = useState<ExportResult | null>(null);
- const [error, setError] = useState<string | null>(null);
- const canDownload =
- result !== null &&
- result.model === model &&
- result.validation_state !== "errors" &&
- !loading;
+  const [nif, setNif] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [contextLoading, setContextLoading] = useState(true);
+  const [context, setContext] = useState<ExpedienteContext | null>(null);
+  const [result, setResult] = useState<ExportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
 
- async function handleGenerate() {
- setLoading(true);
- setError(null);
- setResult(null);
- try {
- const response = await fetch(`/api/exports/${expedienteId}?model=${model}`, {
- method: "GET",
- });
- const payload = (await response.json()) as ExportResult;
- if (!response.ok) {
- setError((payload as unknown as { error: string }).error ?? "Error al generar");
- return;
- }
- setResult(payload);
- window.dispatchEvent(new Event("expediente:refresh"));
- } catch (err) {
- setError(err instanceof Error ? err.message : "Error desconocido");
- } finally {
- setLoading(false);
- }
- }
+  useEffect(() => {
+    let cancelled = false;
 
- function handleDownload() {
- const nifParam = nif.trim() || "00000000T";
- const url = `/api/exports/${expedienteId}/download?model=${model}&nif=${encodeURIComponent(nifParam)}&ejercicio=${ejercicio}`;
- // Descarga directa del fichero AEAT
- const a = document.createElement("a");
- a.href = url;
- a.download = `MODELO_${model}_${ejercicio}.${model}`;
- document.body.appendChild(a);
- a.click();
- document.body.removeChild(a);
- }
+    async function loadContext() {
+      setContextLoading(true);
 
- return (
- <section className="card">
- <h2>Exportadores AEAT</h2>
- <p className="muted">
- Genera ficheros <code>.100</code>, <code>.714</code> y <code>.720</code> en formato de
- longitud fija para presentación telemática en la AEAT.
- </p>
- <div className="form">
- <label htmlFor="model-select">Modelo AEAT</label>
- <select
- id="model-select"
- value={model}
- onChange={(e) => setModel(e.target.value as "100" | "714" | "720")}
- >
- <option value="100">Modelo 100 — IRPF (Ganancias y pérdidas)</option>
- <option value="714">Modelo 714 — Impuesto sobre el Patrimonio</option>
- <option value="720">Modelo 720 — Bienes en el extranjero</option>
- </select>
+      try {
+        const response = await fetch(`/api/expedientes/${expedienteId}`, { cache: "no-store" });
+        const body = (await response.json().catch(() => null)) as ExpedienteContext | { error?: string } | null;
 
- <label htmlFor="nif-input">NIF del declarante</label>
- <input
- id="nif-input"
- type="text"
- placeholder="Ej: 12345678A"
- value={nif}
- onChange={(e) => setNif(e.target.value.toUpperCase())}
- maxLength={9}
- style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}
- />
+        if (cancelled) {
+          return;
+        }
 
- <label htmlFor="ejercicio-input">Ejercicio fiscal</label>
- <input
- id="ejercicio-input"
- type="number"
- min={2013}
- max={2030}
- value={ejercicio}
- onChange={(e) => setEjercicio(e.target.value)}
- />
+        if (!response.ok) {
+          const errorMessage = body && "error" in body ? body.error : undefined;
+          throw new Error(errorMessage ?? "No se pudo cargar el expediente para exportación.");
+        }
 
- <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "8px" }}>
- <button type="button" className="secondary" onClick={handleGenerate} disabled={loading}>
- {loading ? "Validando..." : "Validar y previsualizar"}
- </button>
- <button
- type="button"
- onClick={handleDownload}
- disabled={!canDownload}
- style={{
- background: "var(--color-primary, #1a365d)",
- color: "white",
- border: "none",
- borderRadius: "4px",
- padding: "8px 16px",
- cursor: canDownload ? "pointer" : "not-allowed",
- opacity: canDownload ? 1 : 0.6,
- fontWeight: 600,
- }}
- >
- Descargar fichero AEAT
- </button>
- </div>
- </div>
+        const nextContext = body as ExpedienteContext;
+        setContext(nextContext);
+        setNif((current) => current || nextContext.client?.fiscal_unit.primary_taxpayer_nif || nextContext.client?.nif || "");
+        setContextError(null);
+      } catch (loadError) {
+        if (cancelled) {
+          return;
+        }
 
- {error ? <p className="badge danger">{error}</p> : null}
+        setContext(null);
+        setContextError(
+          loadError instanceof Error ? loadError.message : "No se pudo cargar el contexto de exportación."
+        );
+      } finally {
+        if (!cancelled) {
+          setContextLoading(false);
+        }
+      }
+    }
 
- {result ? (
- <div className="result">
- <p>
- <span
- className={`badge ${
- result.validation_state === "ok"
- ? "success"
- : result.validation_state === "warnings"
- ? "warning"
- : "danger"
- }`}
- >
- {result.validation_state === "ok"
- ? "Validación correcta"
- : result.validation_state === "warnings"
- ? "Con advertencias"
- : "Con errores"}
- </span>
- </p>
- {result.messages.length > 0 && (
- <ul style={{ marginTop: "8px", paddingLeft: "1.2rem" }}>
- {result.messages.map((msg, i) => (
- <li key={i} className="muted" style={{ fontSize: "0.85rem" }}>
- {msg}
- </li>
- ))}
- </ul>
- )}
- {result.model === "100" && result.runtime_source ? (
- <p className="muted" style={{ marginTop: "8px", fontSize: "0.85rem" }}>
- Runtime fiscal:{" "}
- <code>{result.runtime_source === "irpf_asset_fiscal_events" ? "irpf_asset_fiscal_events" : "irpf_operations"}</code>
- </p>
- ) : null}
- {result.runtime_issues && result.runtime_issues.length > 0 ? (
- <div style={{ marginTop: "12px" }}>
- <p className="muted" style={{ marginBottom: "8px" }}>
- Incidencias de runtime detectadas antes de exportar:
- </p>
- <ul style={{ marginTop: "8px", paddingLeft: "1.2rem" }}>
- {result.runtime_issues.map((issue) => (
- <li key={`${issue.code}-${issue.operation_id}`} className="muted" style={{ fontSize: "0.85rem" }}>
- {issue.message}
- </li>
- ))}
- </ul>
- </div>
- ) : null}
- {result.blocked_losses && result.blocked_losses.length > 0 ? (
- <div style={{ marginTop: "12px" }}>
- <p className="muted" style={{ marginBottom: "8px" }}>
- Trazabilidad de pérdidas bloqueadas detectadas:
- </p>
- <div className="table-wrap">
- <table>
- <thead>
- <tr>
- <th>Venta</th>
- <th>Recompra</th>
- <th>Pérdida</th>
- <th>Regla</th>
- </tr>
- </thead>
- <tbody>
- {result.blocked_losses.map((blockedLoss) => (
- <tr key={`${blockedLoss.sale_operation_id}-${blockedLoss.blocked_by_buy_operation_id}`}>
- <td>{new Date(blockedLoss.sale_date).toLocaleDateString("es-ES")} · {blockedLoss.isin}</td>
- <td>{new Date(blockedLoss.blocked_by_buy_date).toLocaleDateString("es-ES")}</td>
- <td>{formatCurrency(blockedLoss.realized_loss, blockedLoss.currency)}</td>
- <td>{blockedLoss.window_months} meses</td>
- </tr>
- ))}
- </tbody>
- </table>
- </div>
- </div>
- ) : null}
- {result?.validation_state === "errors" ? (
- <p className="muted" style={{ marginTop: "8px" }}>
- Corrige los errores de validación antes de descargar el fichero AEAT.
- </p>
- ) : null}
- <details style={{ marginTop: "12px" }}>
- <summary className="muted">Ver metadatos técnicos</summary>
- <pre style={{ fontSize: "0.75rem", overflowX: "auto" }}>
- {JSON.stringify(
- {
- artifact_path: result.artifact_path,
- artifact_hash: result.artifact_hash.slice(0, 16) + "...",
- generated_at: result.generated_at,
- },
- null,
- 2
- )}
- </pre>
- </details>
- </div>
- ) : null}
- </section>
- );
+    void loadContext();
+
+    const refreshListener = () => void loadContext();
+    window.addEventListener("expediente:refresh", refreshListener);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("expediente:refresh", refreshListener);
+    };
+  }, [expedienteId]);
+
+  const allowedModel =
+    context && isExpedienteModelType(context.model_type)
+      ? exportModelForExpediente(context.model_type)
+      : null;
+  const declaredNif =
+    nif.trim().toUpperCase() ||
+    context?.client?.fiscal_unit.primary_taxpayer_nif ||
+    context?.client?.nif ||
+    null;
+  const assetMetrics = useMemo(() => (context ? summarizeCanonicalAssets({ assets: context.assets }) : null), [context]);
+  const preparation = useMemo(
+    () =>
+      context
+        ? evaluateModelPreparation({
+            model_type: context.model_type,
+            has_client: Boolean(context.client),
+            client_nif: declaredNif,
+            fiscal_unit: context.client?.fiscal_unit ?? null,
+            counts: {
+              documents: context.counts.total,
+              pending_review: context.counts.manual_review + context.counts.failed,
+              open_alerts: 0,
+              operations: context.counts.operations,
+              assets: context.counts.assets,
+              foreign_assets: assetMetrics?.foreignAssets ?? 0,
+              missing_asset_values: assetMetrics?.missingValuationAssets ?? 0,
+              missing_foreign_values: assetMetrics?.missingForeignValuationAssets ?? 0,
+              missing_ownership_assets: assetMetrics?.missingOwnershipAssets ?? 0,
+              missing_foreign_country_assets: assetMetrics?.missingForeignCountryAssets ?? 0,
+              missing_foreign_block_assets: assetMetrics?.missingForeignBlockAssets ?? 0,
+              missing_foreign_q4_assets: assetMetrics?.missingForeignQ4BalanceAssets ?? 0,
+              threshold_reached_blocks: assetMetrics?.thresholdReachedBlocks.length ?? 0,
+              sales_pending: context.counts.sales_pending,
+              exports: context.counts.exports
+            },
+            canonical_runtime_mode: context.canonical_runtime_mode ?? "derived",
+            canonical_approval_status: context.workflow.canonical_approval_status
+          })
+        : null,
+    [assetMetrics, context, declaredNif]
+  );
+
+  const latestExport = context?.exports[0] ?? null;
+  const aeatAllowedByPolicy = result?.aeat_allowed ?? latestExport?.aeat_allowed ?? true;
+  const canGenerate =
+    !loading &&
+    !contextLoading &&
+    Boolean(context?.client) &&
+    Boolean(allowedModel) &&
+    preparation?.status !== "blocked";
+  const canDownloadOperational =
+    !loading && !contextLoading && Boolean(context?.client) && Boolean(allowedModel);
+  const canDownloadAeat =
+    canDownloadOperational && preparation?.status !== "blocked" && Boolean(declaredNif) && aeatAllowedByPolicy;
+  const nextHref =
+    !context || !preparation
+      ? null
+      : preparation.next_target === "client"
+        ? context.client
+          ? `/clientes/${context.client.reference}`
+          : null
+        : preparation.next_target === "modelos"
+          ? `/expedientes/${context.expediente_reference}?fase=modelos`
+          : `/expedientes/${context.expediente_reference}?fase=${preparation.next_target}`;
+
+  async function handleGenerate() {
+    if (!allowedModel) {
+      setError("El expediente no tiene un modelo declarativo compatible para exportación.");
+      return;
+    }
+
+    if (!context?.client) {
+      setError("El expediente debe estar vinculado a un cliente antes de preparar modelos AEAT.");
+      return;
+    }
+
+    if (preparation?.status === "blocked") {
+      setError(preparation.summary);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await fetch(`/api/exports/${expedienteId}?model=${allowedModel}`, {
+        method: "GET"
+      });
+      const payload = (await response.json()) as ExportResult | { error?: string };
+      if (!response.ok) {
+        setError((payload as { error?: string }).error ?? "Error al generar");
+        return;
+      }
+      setResult(payload as ExportResult);
+      window.dispatchEvent(new Event("expediente:refresh"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error desconocido");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleDownload(format: OperationalDownloadFormat) {
+    if (!allowedModel) {
+      setError("El expediente no tiene un modelo declarativo compatible para descarga.");
+      return;
+    }
+
+    const nifParam = declaredNif?.trim().toUpperCase() ?? "";
+    if (format === "aeat" && !nifParam) {
+      setError("Indica el NIF del declarante antes de descargar el fichero AEAT.");
+      return;
+    }
+
+    const searchParams = new URLSearchParams({ model: allowedModel, format });
+    if (nifParam) {
+      searchParams.set("nif", nifParam);
+    }
+    const url = `/api/exports/${expedienteId}/download?${searchParams.toString()}`;
+
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = downloadFilename(
+      format,
+      allowedModel,
+      context?.expediente_reference ?? expedienteId,
+      context?.fiscal_year
+    );
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  }
+
+  return (
+    <section className="card">
+      <div className="section-header">
+        <div>
+          <h2>Workspace declarativo</h2>
+          <p className="muted">
+            Preparación operativa del expediente para salida AEAT, informe de trabajo y hoja XLS.
+            Aquí se comprueban prerequisitos, se valida el modelo y se decide qué salida puede usarse.
+          </p>
+        </div>
+        {context && allowedModel ? (
+          <span className="badge info">
+            {context.expediente_reference} · {expedienteModelLabel(context.model_type)} · {exportModelLabel(allowedModel)}
+          </span>
+        ) : null}
+      </div>
+
+      {context ? (
+        <div className="model-generator-grid">
+          <article className="stack-item">
+            <h3>Estado declarativo</h3>
+            {preparation ? (
+              <>
+                <p style={{ marginTop: "10px" }}>
+                  <span
+                    className={
+                      preparation.status === "ready"
+                        ? "badge success"
+                        : preparation.status === "attention"
+                          ? "badge warning"
+                          : "badge danger"
+                    }
+                  >
+                    {preparation.status === "ready"
+                      ? "Listo"
+                      : preparation.status === "attention"
+                        ? "Con atención"
+                        : "Bloqueado"}
+                  </span>
+                </p>
+                <p className="muted" style={{ margin: 0 }}>
+                  {preparation.summary}
+                </p>
+                <p className="muted" style={{ margin: "10px 0 0" }}>
+                  Bloqueos: {preparation.blockers} · advertencias: {preparation.warnings}
+                </p>
+                {nextHref ? (
+                  <div className="model-workspace-actions" style={{ marginTop: "12px" }}>
+                    <Link href={nextHref} className="button-link">
+                      {preparation.next_label}
+                    </Link>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <p className="muted" style={{ margin: 0 }}>
+                Cargando estado declarativo...
+              </p>
+            )}
+          </article>
+
+          <article className="stack-item">
+            <h3>Contexto fiscal</h3>
+            <p className="muted" style={{ margin: 0 }}>
+              Cliente: {context.client ? context.client.display_name : "sin cliente"}
+              <br />
+              Declarante: {declaredNif ?? "sin NIF"}
+              <br />
+              Runtime canónico: {context.canonical_runtime_mode === "persisted" ? "persistido" : "derivado"}
+              <br />
+              Gate canónico: {context.workflow.canonical_approval_status}
+              <br />
+              Documentos: {context.counts.total} · revisión pendiente: {context.counts.manual_review + context.counts.failed}
+              <br />
+              Operaciones: {context.counts.operations} · activos: {assetMetrics?.totalAssets ?? context.counts.assets}
+              <br />
+              Activos extranjeros: {assetMetrics?.foreignAssets ?? 0} · sin valorar: {assetMetrics?.missingForeignValuationAssets ?? 0}
+              <br />
+              Sin titularidad: {assetMetrics?.missingOwnershipAssets ?? 0} · bloques 720 sobre umbral: {assetMetrics?.thresholdReachedBlocks.length ?? 0}
+              <br />
+              Ventas pendientes: {context.counts.sales_pending}
+              <br />
+              Owner: {context.workflow.workflow_owner_name ?? "sin asignar"}
+            </p>
+          </article>
+        </div>
+      ) : null}
+
+      {preparation ? (
+        <div className="model-checklist-grid" style={{ marginTop: "18px" }}>
+          {preparation.checklist.map((check) => (
+            <article className="stack-item" key={check.code}>
+              <div className="review-item-header">
+                <h3>{check.label}</h3>
+                <span className={checklistBadgeClass(check.status)}>{check.status}</span>
+              </div>
+              <p className="muted" style={{ margin: 0 }}>
+                {check.detail}
+              </p>
+            </article>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="model-generator-grid" style={{ marginTop: "18px" }}>
+        <article className="stack-item">
+          <h3>Acción AEAT</h3>
+          <div className="form" style={{ marginTop: "10px" }}>
+            <label htmlFor="nif-input">NIF del declarante</label>
+            <input
+              id="nif-input"
+              type="text"
+              placeholder="Ej: 12345678A"
+              value={nif}
+              onChange={(event) => setNif(event.target.value.toUpperCase())}
+              maxLength={20}
+              style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}
+              disabled={contextLoading || loading}
+            />
+
+            <p className="muted" style={{ marginTop: "-4px" }}>
+              Se usa como valor inicial el NIF del sujeto pasivo principal o, en su defecto, el de la ficha del cliente.
+            </p>
+            <p className="muted" style={{ marginTop: "-4px" }}>
+              {operationalModelCopy(allowedModel)}
+            </p>
+            <p className="muted" style={{ marginTop: "-4px" }}>
+              El informe y la hoja XLS pueden descargarse para trabajo interno aunque la salida AEAT siga bloqueada.
+            </p>
+
+            <div className="model-workspace-actions">
+              <button type="button" className="secondary" onClick={handleGenerate} disabled={!canGenerate}>
+                {loading ? "Validando..." : "Validar preparación"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => handleDownload("report")}
+                disabled={!canDownloadOperational}
+              >
+                Descargar informe
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => handleDownload("xls")}
+                disabled={!canDownloadOperational}
+              >
+                Descargar hoja XLS
+              </button>
+              <button type="button" onClick={() => handleDownload("aeat")} disabled={!canDownloadAeat}>
+                Descargar fichero AEAT
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <article className="stack-item">
+          <h3>Informe de preparación</h3>
+          <p className="muted" style={{ margin: 0 }}>
+            Modelo: {allowedModel ? exportModelLabel(allowedModel) : "sin modelo"}
+            <br />
+            Expediente: {context?.expediente_reference ?? expedienteId}
+            <br />
+            Ejercicio: {context?.fiscal_year ?? "-"}
+            <br />
+            Unidad fiscal: {context?.client?.fiscal_unit ? "informada" : "sin estructurar"}
+            <br />
+            Historial declarativo: {context?.counts.exports ?? 0} validación(es) o exporte(s)
+            <br />
+            Patrimonio consolidado: {assetMetrics?.totalValuation ?? 0} · extranjero: {assetMetrics?.totalForeignValuation ?? 0}
+            <br />
+            Tarea pendiente: {context?.workflow.pending_task ?? "sin tarea pendiente"}
+          </p>
+          {latestExport ? (
+            <p style={{ marginTop: "10px" }}>
+              <span className="badge info">{latestExport.status}</span>{" "}
+              <span className={validationBadgeClass(latestExport.validation_state)}>
+                {latestExport.validation_state}
+              </span>
+            </p>
+          ) : null}
+        </article>
+      </div>
+
+      {contextError ? <p className="badge warning">{contextError}</p> : null}
+      {error ? <p className="badge danger">{error}</p> : null}
+
+      {result ? (
+        <div className="result model-result-panel">
+          <div className="review-item-header">
+            <h3>Última validación</h3>
+            <span className={validationBadgeClass(result.validation_state)}>
+              {result.validation_state === "ok"
+                ? "Validación correcta"
+                : result.validation_state === "warnings"
+                  ? "Con advertencias"
+                  : "Con errores"}
+            </span>
+          </div>
+          {result.messages.length > 0 ? (
+            <ul style={{ marginTop: "8px", paddingLeft: "1.2rem" }}>
+              {result.messages.map((msg, index) => (
+                <li key={index} className="muted" style={{ fontSize: "0.85rem" }}>
+                  {msg}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted" style={{ marginTop: "8px" }}>
+              Sin observaciones.
+            </p>
+          )}
+          <details style={{ marginTop: "12px" }}>
+            <summary className="muted">Ver metadatos técnicos</summary>
+            <pre style={{ fontSize: "0.75rem", overflowX: "auto" }}>
+              {JSON.stringify(
+                {
+                  artifact_path: result.artifact_path,
+                  artifact_hash: `${result.artifact_hash.slice(0, 16)}...`,
+                  generated_at: result.generated_at,
+                  expediente_reference: result.expediente_reference,
+                  fiscal_year: result.fiscal_year,
+                  available_download_formats: result.available_download_formats ?? ["aeat", "report", "xls"]
+                },
+                null,
+                2
+              )}
+            </pre>
+          </details>
+        </div>
+      ) : latestExport ? (
+        <div className="result model-result-panel">
+          <div className="review-item-header">
+            <h3>Última salida registrada</h3>
+            <span className={validationBadgeClass(latestExport.validation_state)}>
+              {latestExport.validation_state}
+            </span>
+          </div>
+          <p className="muted" style={{ margin: 0 }}>
+            {latestExport.model} · {formatDate(latestExport.generated_at)}
+          </p>
+          {latestExport.messages && latestExport.messages.length > 0 ? (
+            <ul style={{ marginTop: "8px", paddingLeft: "1.2rem" }}>
+              {latestExport.messages.map((message, index) => (
+                <li key={index} className="muted" style={{ fontSize: "0.85rem" }}>
+                  {message}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { isWorkflowEventType } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
+import { syncExpedienteWorkflowById } from "@/lib/expediente-workflow";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 const parseEventSchema = z.object({
@@ -71,30 +72,47 @@ export async function POST(request: Request) {
   }
 
   const resolvedExpediente = normalizeExpedienteId(parsed.data.expediente_id);
+  const { data: existingExpediente, error: existingExpedienteError } = await supabase
+    .from(dbTables.expedientes)
+    .select("id, reference")
+    .eq("id", resolvedExpediente.id)
+    .maybeSingle();
+
+  if (existingExpedienteError) {
+    return NextResponse.json(
+      {
+        error: `No se pudo verificar el expediente del webhook: ${existingExpedienteError.message}`
+      },
+      { status: 500 }
+    );
+  }
+
   const ignoreManualReviewEvent =
     parsed.data.event_type === "manual.review.required"
       ? await shouldIgnoreManualReviewEvent(parsed.data.document_id, supabase)
       : false;
 
-  const { error: expedienteError } = await supabase.from(dbTables.expedientes).upsert(
-    {
-      id: resolvedExpediente.id,
-      reference: resolvedExpediente.reference,
-      fiscal_year: new Date().getFullYear(),
-      model_type: "IRPF",
-      title: `Expediente ${resolvedExpediente.reference}`,
-      status: "EN_REVISION"
-    },
-    { onConflict: "id" }
-  );
-
-  if (expedienteError) {
-    return NextResponse.json(
+  if (!existingExpediente) {
+    const { error: expedienteError } = await supabase.from(dbTables.expedientes).upsert(
       {
-        error: `No se pudo garantizar expediente para webhook: ${expedienteError.message}`
+        id: resolvedExpediente.id,
+        reference: resolvedExpediente.reference,
+        fiscal_year: new Date().getFullYear(),
+        model_type: "IRPF",
+        title: `Expediente ${resolvedExpediente.reference}`,
+        status: "EN_REVISION"
       },
-      { status: 500 }
+      { onConflict: "id" }
     );
+
+    if (expedienteError) {
+      return NextResponse.json(
+        {
+          error: `No se pudo garantizar expediente para webhook: ${expedienteError.message}`
+        },
+        { status: 500 }
+      );
+    }
   }
 
   const status = statusFromEvent(parsed.data.event_type);
@@ -127,7 +145,7 @@ export async function POST(request: Request) {
       event_type: parsed.data.event_type,
       payload: parsed.data.payload ?? {},
       document_id: parsed.data.document_id,
-      expediente_reference: resolvedExpediente.reference
+      expediente_reference: existingExpediente?.reference ?? resolvedExpediente.reference
     }
   });
 
@@ -170,6 +188,10 @@ export async function POST(request: Request) {
       );
     }
   }
+
+  await syncExpedienteWorkflowById(supabase, {
+    expedienteId: resolvedExpediente.id
+  }).catch(() => null);
 
   return NextResponse.json({ ok: true });
 }

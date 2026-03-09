@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
+import { buildModel100RuntimeFromCanonical } from "@/lib/canonical-exports";
+import { loadPersistedCanonicalExpedienteView } from "@/lib/canonical-store";
 import { findClientCompat } from "@/lib/client-store";
-import { loadCanonicalRegistrySnapshot } from "@/lib/asset-registry-store";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
 import {
-  type FiscalRuntimeIssue,
-  type RuntimeOperationRow
-} from "@/lib/lots";
-import { buildModel100Runtime } from "@/lib/model100-runtime";
-import { serializeFiscalAdjustment, type FiscalAdjustmentRow } from "@/lib/fiscal-adjustments";
+  buildExpedienteWorkflowSnapshot,
+  loadPersistedExpedienteWorkflow,
+  persistExpedienteWorkflowSnapshot
+} from "@/lib/expediente-workflow";
+import { deriveCanonicalAssetViews } from "@/lib/fiscal-canonical";
+import { summarizeSalesFromOperations, type PersistedSaleAllocationRow, type RuntimeOperationRow } from "@/lib/lots";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +46,7 @@ type ExportRow = {
   status: string;
   validation_state: string;
   artifact_path: string;
+  payload: JsonObject | null;
   generated_at: string | null;
   created_at: string;
 };
@@ -66,6 +69,17 @@ type OperationRow = {
   created_at: string;
 };
 
+type AllocationRow = {
+  sale_operation_id: string;
+  quantity: number | string;
+  sale_amount_allocated: number | string | null;
+  total_cost: number | string | null;
+  realized_gain: number | string | null;
+  acquisition_date: string;
+  acquisition_operation_id: string | null;
+  currency: string | null;
+};
+
 type LotRow = {
   id: string;
   acquisition_operation_id: string | null;
@@ -83,9 +97,6 @@ type LotRow = {
   metadata: JsonObject | null;
   created_at: string;
 };
-
-type BlockedLossRow = ReturnType<typeof buildModel100Runtime>["blockedLosses"][number];
-type RuntimeIssueRow = FiscalRuntimeIssue;
 
 type ExpedienteRow = {
   id: string;
@@ -122,11 +133,6 @@ function countLotSales(payload: JsonObject | null): number {
   return Array.isArray(candidate) ? candidate.length : 0;
 }
 
-function countLotTransfers(payload: JsonObject | null): number {
-  const candidate = payload?.transfers_out;
-  return Array.isArray(candidate) ? candidate.length : 0;
-}
-
 export async function GET(
   _request: Request,
   { params }: { params: { id: string } }
@@ -141,7 +147,7 @@ export async function GET(
     const resolvedExpediente = normalizeExpedienteId(params.id);
     await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "expedientes.read");
 
-    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, adjustmentsResult, canonicalRegistry] = await Promise.all([
+    const [expedienteResult, documentsResult, exportsResult, operationsResult, lotsResult, allocationsResult] = await Promise.all([
       supabase
         .from(dbTables.expedientes)
         .select("id, reference, client_id, fiscal_year, model_type, title, status, created_at, updated_at")
@@ -154,7 +160,7 @@ export async function GET(
         .order("created_at", { ascending: false }),
       supabase
         .from(dbTables.exports)
-        .select("id, model, status, validation_state, artifact_path, generated_at, created_at")
+        .select("id, model, status, validation_state, artifact_path, payload, generated_at, created_at")
         .eq("expediente_id", resolvedExpediente.id)
         .order("created_at", { ascending: false }),
       supabase
@@ -174,14 +180,13 @@ export async function GET(
         .order("acquisition_date", { ascending: true })
         .order("created_at", { ascending: true }),
       supabase
-        .from(dbTables.fiscalAdjustments)
+        .from(dbTables.saleAllocations)
         .select(
-          "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
+          "sale_operation_id, quantity, sale_amount_allocated, total_cost, realized_gain, acquisition_date, acquisition_operation_id, currency"
         )
         .eq("expediente_id", resolvedExpediente.id)
-        .order("operation_date", { ascending: true })
-        .order("created_at", { ascending: true }),
-      loadCanonicalRegistrySnapshot(supabase, resolvedExpediente.id)
+        .order("sale_date", { ascending: true })
+        .order("acquisition_date", { ascending: true })
     ]);
 
     if (
@@ -189,7 +194,7 @@ export async function GET(
       exportsResult.error ||
       operationsResult.error ||
       lotsResult.error ||
-      adjustmentsResult.error
+      allocationsResult.error
     ) {
       return NextResponse.json(
         {
@@ -198,7 +203,7 @@ export async function GET(
             exportsResult.error?.message ??
             operationsResult.error?.message ??
             lotsResult.error?.message ??
-            adjustmentsResult.error?.message ??
+            allocationsResult.error?.message ??
             "No se pudo cargar el expediente"
         },
         { status: 500 }
@@ -213,12 +218,16 @@ export async function GET(
     }
 
     const expediente = expedienteResult.data as ExpedienteRow | null;
+    if (!expediente) {
+      return NextResponse.json({ error: "Expediente no encontrado." }, { status: 404 });
+    }
+
     const documents = (documentsResult.data ?? []) as DocumentRow[];
     const exportsRows = (exportsResult.data ?? []) as ExportRow[];
     const operationsRows = (operationsResult.data ?? []) as OperationRow[];
     const lotsRows = (lotsResult.data ?? []) as LotRow[];
-    const adjustmentsRows = (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[];
-    const client = expediente?.client_id ? await findClientCompat(supabase, expediente.client_id) : null;
+    const allocationsRows = (allocationsResult.data ?? []) as AllocationRow[];
+    const client = expediente.client_id ? await findClientCompat(supabase, expediente.client_id) : null;
 
     const documentIds = documents.map((document) => document.id);
     const extractionResult = documentIds.length === 0
@@ -299,7 +308,7 @@ export async function GET(
       manual_notes: row.manual_notes
     }));
 
-    const persistedLots = lotsRows.map((row) => ({
+    const responseLots = lotsRows.map((row) => ({
       id: row.id,
       acquisition_operation_id: row.acquisition_operation_id,
       isin: row.isin,
@@ -313,38 +322,13 @@ export async function GET(
       currency: row.currency,
       status: row.status,
       source: row.source,
-      sales_count: countLotSales(row.metadata),
-      transfers_count: countLotTransfers(row.metadata)
+      sales_count: countLotSales(row.metadata)
     }));
 
-    const runtime = buildModel100Runtime({
-      expedienteId: resolvedExpediente.id,
-      canonicalRegistry,
-      legacyOperations: operationsRows as RuntimeOperationRow[],
-      adjustments: adjustmentsRows
-    });
-    const responseLots =
-      runtime.source === "irpf_asset_fiscal_events"
-        ? runtime.lots.map((lot) => ({
-            id: lot.id,
-            acquisition_operation_id: lot.acquisition_operation_id,
-            isin: lot.isin,
-            description: lot.description,
-            acquisition_date: lot.acquisition_date,
-            quantity_original: lot.quantity_original,
-            quantity_open: lot.quantity_open,
-            quantity_sold: lot.quantity_sold,
-            unit_cost: lot.unit_cost,
-            total_cost: lot.total_cost,
-            currency: lot.currency,
-            status: lot.status,
-            source: lot.source,
-            sales_count: countLotSales(lot.metadata),
-            transfers_count: countLotTransfers(lot.metadata)
-          }))
-        : persistedLots;
-
-    const saleSummaries = runtime.saleSummaries.map((summary) => ({
+    const saleSummaries = summarizeSalesFromOperations({
+      operations: operationsRows as RuntimeOperationRow[],
+      allocations: allocationsRows as PersistedSaleAllocationRow[]
+    }).map((summary) => ({
       sale_operation_id: summary.sale_operation_id,
       operation_date: summary.operation_date,
       isin: summary.isin,
@@ -362,30 +346,88 @@ export async function GET(
       status: summary.status,
       source: summary.source
     }));
-    const blockedLosses = runtime.blockedLosses.map((blockedLoss: BlockedLossRow) => ({
-      sale_operation_id: blockedLoss.sale_operation_id,
-      blocked_by_buy_operation_id: blockedLoss.blocked_by_buy_operation_id,
-      isin: blockedLoss.isin,
-      sale_date: blockedLoss.sale_date,
-      blocked_by_buy_date: blockedLoss.blocked_by_buy_date,
-      window_months: blockedLoss.window_months,
-      sale_quantity: blockedLoss.sale_quantity,
-      blocked_by_buy_quantity: blockedLoss.blocked_by_buy_quantity,
-      realized_loss: blockedLoss.realized_loss,
-      currency: blockedLoss.currency,
-      reason: blockedLoss.reason,
-      sale_description: blockedLoss.sale_description,
-      blocked_by_buy_description: blockedLoss.blocked_by_buy_description,
-      sale_source: blockedLoss.sale_source,
-      blocked_by_buy_source: blockedLoss.blocked_by_buy_source
-    }));
-    const runtimeIssues = runtime.issues.map((issue: RuntimeIssueRow) => ({
-      code: issue.code,
-      operation_id: issue.operation_id,
-      isin: issue.isin ?? null,
-      quantity: issue.quantity ?? null,
-      message: issue.message
-    }));
+
+    const derivedCanonicalViews = deriveCanonicalAssetViews({
+      operations: responseOperations.map((operation) => ({
+        ...operation,
+        expediente_id: expediente.id
+      })),
+      lots: responseLots.map((lot) => ({
+        ...lot,
+        expediente_id: expediente.id
+      })),
+      saleSummaries,
+      expedienteMetaById: new Map([
+        [
+          expediente.id,
+          {
+            reference: expediente.reference,
+            fiscal_year: expediente.fiscal_year,
+            model_type: expediente.model_type
+          }
+        ]
+      ])
+    });
+
+    const persistedCanonicalViews = await loadPersistedCanonicalExpedienteView(supabase, {
+      clientId: client?.id ?? null,
+      expedienteId: expediente.id,
+      expedienteReference: expediente.reference,
+      eventLimit: 200
+    });
+
+    const shouldFallbackToDerived =
+      persistedCanonicalViews === null ||
+      (
+        persistedCanonicalViews.assets.length === 0 &&
+        persistedCanonicalViews.fiscalEvents.length === 0 &&
+        (responseOperations.length > 0 || responseLots.length > 0 || saleSummaries.length > 0)
+      );
+
+    const canonicalViews = shouldFallbackToDerived ? derivedCanonicalViews : persistedCanonicalViews;
+    const canonicalModel100Runtime = buildModel100RuntimeFromCanonical({
+      fiscalEvents: canonicalViews.fiscalEvents
+    });
+    const canonicalSaleByOperationId = new Map(
+      canonicalModel100Runtime.saleRecords.map((sale) => [sale.source_operation_id, sale])
+    );
+    const responseSaleSummaries = saleSummaries.map((summary) => {
+      const canonicalSale = canonicalSaleByOperationId.get(summary.sale_operation_id);
+      if (!canonicalSale) {
+        return summary;
+      }
+
+      return {
+        ...summary,
+        description: canonicalSale.description ?? summary.description,
+        quantity: canonicalSale.quantity ?? summary.quantity,
+        sale_amount: canonicalSale.amount ?? summary.sale_amount,
+        currency: canonicalSale.currency ?? summary.currency,
+        realized_gain: canonicalSale.realized_gain,
+        status: canonicalSale.status
+      };
+    });
+
+    const workflowSnapshot = buildExpedienteWorkflowSnapshot({
+      expediente_id: expediente.id,
+      expediente_status: expediente.status,
+      has_client: Boolean(client),
+      counts: {
+        documents: statusCounts.total,
+        queued: statusCounts.queued,
+        processing: statusCounts.processing,
+        manual_review: statusCounts.manual_review,
+        failed: statusCounts.failed,
+        assets: canonicalViews.assets.length,
+        fiscal_events: canonicalViews.fiscalEvents.length,
+        operations: responseOperations.length,
+        exports: exportsRows.length,
+        sales_pending: canonicalModel100Runtime.saleRecords.filter((sale) => sale.status !== "MATCHED").length
+      },
+      persisted: await loadPersistedExpedienteWorkflow(supabase, expediente.id)
+    });
+
+    await persistExpedienteWorkflowSnapshot(supabase, workflowSnapshot).catch(() => null);
 
     return NextResponse.json({
       current_user: {
@@ -393,57 +435,60 @@ export async function GET(
         display_name: sessionUser.display_name,
         role: sessionUser.role
       },
-      expediente_id: resolvedExpediente.id,
-      expediente_reference: expediente?.reference ?? resolvedExpediente.reference,
-      title: expediente?.title ?? `Expediente ${resolvedExpediente.reference}`,
-      status: expediente?.status ?? "BORRADOR",
-      fiscal_year: expediente?.fiscal_year ?? new Date().getFullYear(),
-      model_type: expediente?.model_type ?? "IRPF",
+      canonical_runtime_mode: shouldFallbackToDerived ? "derived" : "persisted",
+      canonical_editable:
+        persistedCanonicalViews !== null &&
+        (persistedCanonicalViews.assets.length > 0 || persistedCanonicalViews.fiscalEvents.length > 0),
+      expediente_id: expediente.id,
+      expediente_reference: expediente.reference,
+      title: expediente.title,
+      status: workflowSnapshot.expediente_status,
+      fiscal_year: expediente.fiscal_year,
+      model_type: expediente.model_type,
+      workflow: workflowSnapshot,
       client:
       client
         ? {
             id: client.id,
             reference: client.reference,
             display_name: client.display_name,
-            nif: client.nif
+            nif: client.nif,
+            fiscal_unit: client.fiscal_unit
           }
         : null,
-      created_at: expediente?.created_at ?? null,
-      updated_at: expediente?.updated_at ?? null,
+      created_at: expediente.created_at,
+      updated_at: expediente.updated_at,
       counts: {
         ...statusCounts,
+        assets: canonicalViews.assets.length,
+        fiscal_events: canonicalViews.fiscalEvents.length,
         operations: responseOperations.length,
         exports: exportsRows.length,
         lots_open: responseLots.filter((lot) => lot.status === "OPEN").length,
         lots_closed: responseLots.filter((lot) => lot.status === "CLOSED").length,
-        sales_matched: saleSummaries.filter((sale) => sale.status === "MATCHED").length,
-        sales_pending: saleSummaries.filter((sale) => sale.status !== "MATCHED").length,
-        blocked_losses: blockedLosses.length,
-        adjustments_active: adjustmentsRows.filter((adjustment) => adjustment.status === "ACTIVE").length,
-        runtime_issues: runtimeIssues.length,
-        assets_total: canonicalRegistry.assets.length,
-        assets_foreign: canonicalRegistry.assets.filter((asset) => asset.is_foreign).length,
-        assets_model_720: canonicalRegistry.assets.filter((asset) => asset.supports_720 && asset.is_foreign).length,
-        fiscal_events: canonicalRegistry.fiscalEvents.length
+        sales_matched: canonicalModel100Runtime.saleRecords.filter((sale) => sale.status === "MATCHED").length,
+        sales_pending: canonicalModel100Runtime.saleRecords.filter((sale) => sale.status !== "MATCHED").length
       },
-      canonical_registry_available: canonicalRegistry.available,
-      runtime_source: runtime.source,
-      declaration_profile: canonicalRegistry.declarationProfile,
       documents: responseDocuments,
+      assets: canonicalViews.assets,
+      fiscal_events: canonicalViews.fiscalEvents,
       operations: responseOperations,
       lots: responseLots,
-      adjustments: adjustmentsRows.map(serializeFiscalAdjustment),
-      assets: canonicalRegistry.assets,
-      fiscal_events: canonicalRegistry.fiscalEvents,
-      sale_summaries: saleSummaries,
-      blocked_losses: blockedLosses,
-      runtime_issues: runtimeIssues,
+      sale_summaries: responseSaleSummaries,
       exports: exportsRows.map((row) => ({
         id: row.id,
         model: row.model,
         status: row.status,
         validation_state: row.validation_state,
         artifact_path: row.artifact_path,
+        filing_decision:
+          row.payload && typeof row.payload.filing_decision === "string" ? row.payload.filing_decision : null,
+        aeat_allowed:
+          row.payload && typeof row.payload.aeat_allowed === "boolean" ? row.payload.aeat_allowed : null,
+        messages:
+          row.payload && Array.isArray(row.payload.messages)
+            ? row.payload.messages.filter((item): item is string => typeof item === "string")
+            : [],
         generated_at: row.generated_at ?? row.created_at
       }))
     });

@@ -6,6 +6,7 @@ import { createSupabaseBrowserAuthClient } from "@/lib/supabase-auth";
 
 type SessionPayload = {
   auth_mode: "supabase" | "demo";
+  runtime_environment: "demo" | "sandbox" | "operational";
   current_user: {
     reference: string;
     display_name: string;
@@ -26,6 +27,12 @@ const roleLabel: Record<SessionPayload["current_user"]["role"], string> = {
   fiscal_senior: "Fiscal senior",
   fiscal_junior: "Fiscal junior",
   solo_lectura: "Solo lectura"
+};
+
+const environmentLabel: Record<SessionPayload["runtime_environment"], string> = {
+  demo: "Demo",
+  sandbox: "Sandbox",
+  operational: "Autenticado"
 };
 
 export function SessionSwitcher() {
@@ -122,7 +129,7 @@ export function SessionSwitcher() {
     <div className="session-switcher" aria-label="Sesión de usuario">
       <div className="session-summary">
         <span className="session-label">
-          {payload?.auth_mode === "supabase" ? "Sesión despacho" : "Sesión demo"}
+          {payload ? `${environmentLabel[payload.runtime_environment]} · ${payload.auth_mode === "supabase" ? "Acceso autenticado" : "Acceso demo"}` : "Resolviendo sesión"}
         </span>
         <strong>{currentUser?.display_name ?? "Cargando sesión..."}</strong>
         <span className="muted">
@@ -132,7 +139,7 @@ export function SessionSwitcher() {
 
       {payload?.auth_mode === "demo" ? (
         <label className="session-control">
-          <span className="session-label">Cambiar usuario</span>
+          <span className="session-label">Perfil demo</span>
           <select
             value={currentUser?.reference ?? ""}
             onChange={handleChange}

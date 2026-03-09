@@ -4,9 +4,7 @@ import {
   accessErrorMessage,
   accessErrorStatus,
   assertClientAccess,
-  assertExpedienteAccess,
   getCurrentSessionUser,
-  listAccessibleClientIds,
   requirePermission
 } from "@/lib/auth";
 import { dbTables } from "@/lib/db-tables";
@@ -105,71 +103,27 @@ export async function POST(request: Request) {
       );
     }
 
-    let resolvedClientId = requestedClientId;
-
-    if (expediente) {
-      await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "documents.intake");
-
-      if (expediente.client_id && resolvedClientId && expediente.client_id !== resolvedClientId) {
-        return NextResponse.json(
-          { error: "El expediente ya está asociado a otro cliente y no puede cambiarse desde intake." },
-          { status: 409 }
-        );
-      }
-
-      if (!expediente.client_id && resolvedClientId) {
-        await assertClientAccess(supabase, sessionUser, resolvedClientId, "documents.intake");
-      }
-
-      resolvedClientId = expediente.client_id ?? resolvedClientId;
-    } else {
-      if (resolvedClientId) {
-        await assertClientAccess(supabase, sessionUser, resolvedClientId, "documents.intake");
-      } else {
-        const accessibleClientIds = await listAccessibleClientIds(supabase, sessionUser);
-        if (accessibleClientIds.length !== 1) {
-          return NextResponse.json(
-            { error: "El expediente debe estar asociado a un cliente antes de preparar subidas firmadas." },
-            { status: 400 }
-          );
-        }
-
-        resolvedClientId = accessibleClientIds[0];
-      }
-
-      const { error: upsertError } = await supabase.from(dbTables.expedientes).upsert(
-        {
-          id: resolvedExpediente.id,
-          reference: resolvedExpediente.reference,
-          client_id: resolvedClientId,
-          fiscal_year: new Date().getFullYear(),
-          model_type: "IRPF",
-          title: `Expediente ${resolvedExpediente.reference}`,
-          status: "BORRADOR"
-        },
-        { onConflict: "id" }
+    if (!expediente) {
+      return NextResponse.json(
+        { error: "El expediente no existe. Debes crearlo desde la ficha de cliente antes de subir documentos." },
+        { status: 404 }
       );
-
-      if (upsertError) {
-        return NextResponse.json(
-          { error: `No se pudo preparar el expediente para subida: ${upsertError.message}` },
-          { status: 500 }
-        );
-      }
     }
 
-    if (expediente && !expediente.client_id && resolvedClientId) {
-      const { error: updateError } = await supabase
-        .from(dbTables.expedientes)
-        .update({ client_id: resolvedClientId })
-        .eq("id", resolvedExpediente.id);
+    if (!expediente.client_id) {
+      return NextResponse.json(
+        { error: "El expediente no está vinculado a un cliente. Corrige la ficha antes de subir documentos." },
+        { status: 409 }
+      );
+    }
 
-      if (updateError) {
-        return NextResponse.json(
-          { error: `No se pudo vincular el expediente al cliente seleccionado: ${updateError.message}` },
-          { status: 500 }
-        );
-      }
+    await assertClientAccess(supabase, sessionUser, expediente.client_id, "documents.intake");
+
+    if (requestedClientId && expediente.client_id !== requestedClientId) {
+      return NextResponse.json(
+        { error: "La subida solo puede realizarse sobre el cliente ya vinculado al expediente." },
+        { status: 409 }
+      );
     }
 
     const bucketError = await ensureStorageBucket();
@@ -206,6 +160,7 @@ export async function POST(request: Request) {
       bucket: env.supabaseStorageBucket,
       expediente_id: resolvedExpediente.id,
       expediente_reference: resolvedExpediente.reference,
+      client_id: expediente.client_id,
       uploads
     });
   } catch (error) {

@@ -9,6 +9,7 @@ import {
   getCurrentSessionUser,
   sessionCookieName
 } from "@/lib/auth";
+import { resolveRuntimeEnvironmentKind } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +29,7 @@ export async function GET() {
     const currentUser = await getCurrentSessionUser(supabase);
     const responsePayload: {
       auth_mode: "supabase" | "demo";
+      runtime_environment: "demo" | "sandbox" | "operational";
       current_user: typeof currentUser;
       default_reference: string;
       available_users?: Array<{
@@ -39,6 +41,7 @@ export async function GET() {
       }>;
     } = {
       auth_mode: authMode,
+      runtime_environment: resolveRuntimeEnvironmentKind(),
       current_user: currentUser,
       default_reference: defaultSessionReference()
     };

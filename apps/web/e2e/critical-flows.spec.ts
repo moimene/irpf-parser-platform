@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { PROTOTYPE_SHARED_PASSWORD } from "../lib/prototype-test-users";
 
 const runningWithLocalServer = !process.env.E2E_BASE_URL;
 const hasLocalSupabaseConfig = Boolean(
@@ -9,7 +10,7 @@ const hasLocalSupabaseConfig = Boolean(
 );
 
 const e2eLoginEmail = process.env.E2E_LOGIN_EMAIL ?? "demo@irpf-parser.dev";
-const e2eLoginPassword = process.env.E2E_LOGIN_PASSWORD ?? "Demo2025!";
+const e2eLoginPassword = process.env.E2E_LOGIN_PASSWORD ?? PROTOTYPE_SHARED_PASSWORD;
 
 type ReviewPayload = {
   pending_documents: Array<{ filename: string }>;
@@ -25,7 +26,6 @@ type ExpedientePayload = {
   counts: {
     completed: number;
     exports: number;
-    adjustments_active?: number;
   };
   documents: Array<{
     filename: string;
@@ -33,28 +33,6 @@ type ExpedientePayload = {
     latest_extraction: {
       review_status: string;
     } | null;
-  }>;
-  operations?: Array<{
-    operation_type: string;
-    operation_date: string;
-    description: string | null;
-    amount: number | null;
-    quantity: number | null;
-    source: string;
-  }>;
-  lots?: Array<{
-    isin: string;
-    quantity_original: number;
-  }>;
-};
-
-type ClientPayload = {
-  clients: Array<{
-    id: string;
-    reference: string;
-    display_name: string;
-    nif: string;
-    status: "active" | "inactive" | "archived";
   }>;
 };
 
@@ -182,7 +160,7 @@ async function sessionJsonFetch<T>(
 async function ensureAuthenticated(page: Page) {
   const loginHeading = page.getByRole("heading", { name: "Acceso al despacho" });
   const dashboardHeading = page.getByRole("heading", {
-    name: "Extractor-Parseador Fiscal IRPF / IP / 720"
+    name: "Clientes asignados y expedientes en curso"
   });
 
   await page.goto("/");
@@ -243,7 +221,7 @@ async function waitForPendingReviewDocument(
         const reviewBody = reviewResponse.body as ReviewPayload;
         return reviewBody.pending_documents.filter((item) => item.filename === filename).length;
       },
-      { timeout: 40_000 }
+      { timeout: 25_000 }
     )
     .toBe(expectedCount);
 }
@@ -274,7 +252,6 @@ async function createClient(
   page: Page,
   suffix: string
 ) {
-  const normalizedSuffix = suffix.replace(/[^a-zA-Z0-9]/g, "").slice(-12) || "pwclient";
   const response = await sessionJsonFetch<{
     client?: { id: string; reference: string; display_name: string; nif: string };
     error?: string;
@@ -283,8 +260,8 @@ async function createClient(
     data: {
       reference: `pw-${suffix}`,
       display_name: `Playwright ${suffix}`,
-      nif: `PW${normalizedSuffix}`,
-      email: `playwright+${normalizedSuffix}@irpf-parser.dev`,
+      nif: `${suffix.replace(/\D/g, "").slice(-8).padStart(8, "0")}A`,
+      email: `playwright+${suffix}@irpf-parser.dev`,
       contact_person: "QA Playwright"
     }
   });
@@ -294,37 +271,45 @@ async function createClient(
   return response.body.client as { id: string; reference: string; display_name: string; nif: string };
 }
 
-async function listClients(page: Page) {
-  const response = await sessionJsonFetch<ClientPayload | { error?: string }>(page, "/api/clientes");
-  expect(response.ok, JSON.stringify(response.body)).toBeTruthy();
-  return (response.body as ClientPayload).clients;
-}
-
 async function createExpediente(
   page: Page,
-  input: {
-    clientId: string;
-    reference: string;
-    fiscalYear: number;
-    modelType: "IRPF" | "IP" | "720";
-  }
+  clientId: string,
+  suffix: string,
+  modelType: "IRPF" | "IP" | "720" = "IRPF"
 ) {
+  const fiscalYear = new Date().getFullYear();
   const response = await sessionJsonFetch<{
-    expediente?: { id: string; reference: string };
+    expediente?: {
+      id: string;
+      reference: string;
+      client_id: string;
+      fiscal_year: number;
+      model_type: "IRPF" | "IP" | "720";
+      title: string;
+      status: string;
+    };
     error?: string;
   }>(page, "/api/expedientes", {
     method: "POST",
     data: {
-      client_id: input.clientId,
-      reference: input.reference,
-      fiscal_year: input.fiscalYear,
-      model_type: input.modelType
+      client_id: clientId,
+      fiscal_year: fiscalYear,
+      model_type: modelType,
+      reference: `pw-${suffix}-${modelType.toLowerCase()}-${fiscalYear}`
     }
   });
 
   expect(response.ok, JSON.stringify(response.body)).toBeTruthy();
-  expect(response.body.expediente?.reference).toBe(input.reference);
-  return response.body.expediente as { id: string; reference: string };
+  expect(response.body.expediente).toBeTruthy();
+  return response.body.expediente as {
+    id: string;
+    reference: string;
+    client_id: string;
+    fiscal_year: number;
+    model_type: "IRPF" | "IP" | "720";
+    title: string;
+    status: string;
+  };
 }
 
 test.describe("Smoke de navegacion IRPF", () => {
@@ -332,44 +317,57 @@ test.describe("Smoke de navegacion IRPF", () => {
     await ensureAuthenticated(page);
     const sidebar = page.getByRole("complementary", { name: "Navegación principal" });
 
+    await expect(page.getByText("Mi cartera").first()).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "Extractor-Parseador Fiscal IRPF / IP / 720" })
+      page.getByRole("heading", { name: "Clientes asignados y expedientes en curso" })
     ).toBeVisible();
-    await expect(sidebar.getByRole("link", { name: "Dashboard operativo" })).toBeVisible();
+    await expect(sidebar.getByRole("link", { name: "Mi cartera" })).toBeVisible();
     await expect(sidebar.getByRole("link", { name: "Clientes" })).toBeVisible();
-    await expect(sidebar.getByRole("link", { name: "Expediente demo" })).toBeVisible();
-    await expect(sidebar.getByRole("link", { name: "Revisión manual" })).toBeVisible();
+    await expect(sidebar.getByRole("link", { name: "Bandeja de trabajo" })).toBeVisible();
+    await expect(sidebar.getByRole("link", { name: "Modelos AEAT" })).toBeVisible();
     await expect(sidebar.getByRole("link", { name: "Configuración" })).toBeVisible();
 
     await sidebar.getByRole("link", { name: "Clientes" }).click();
     await expect(page).toHaveURL(/\/clientes$/);
     await expect(page.getByRole("heading", { name: "Clientes", exact: true })).toBeVisible();
 
-    await sidebar.getByRole("link", { name: "Expediente demo" }).click();
-    await expect(page).toHaveURL(/\/expedientes\/demo-irpf-2025$/);
+    await sidebar.getByRole("link", { name: "Modelos AEAT" }).click();
+    await expect(page).toHaveURL(/\/modelos$/);
+    await expect(page.getByRole("heading", { name: "Mesa declarativa del despacho" })).toBeVisible();
+
+    await page.goto("/expedientes/demo-irpf-2025");
     await expect(page.getByRole("heading", { name: "Expediente: demo-irpf-2025" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Fases del expediente" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Estado del expediente" })).toBeVisible();
+
+    await page.goto("/expedientes/demo-irpf-2025?fase=canonico");
+    await expect(page.getByRole("heading", { name: "Activos patrimoniales" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Eventos fiscales" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Ganancias y pérdidas" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Operaciones fiscales" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Lotes de adquisición" })).toBeVisible();
 
-    await sidebar.getByRole("link", { name: "Revisión manual" }).click();
+    await sidebar.getByRole("link", { name: "Bandeja de trabajo" }).click();
     await expect(page).toHaveURL(/\/review$/);
-    await expect(page.getByRole("heading", { name: "Bandeja de Revisión Manual" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Bandeja de trabajo" })).toBeVisible();
 
     await sidebar.getByRole("link", { name: "Configuración" }).click();
     await expect(page).toHaveURL(/\/configuracion$/);
     await expect(page.getByRole("heading", { name: "Configuración y accesos" })).toBeVisible();
 
-    await page.goto("/clientes/fagu");
+    await page.goto("/clientes/lucia-navarro");
     await expect(page.getByRole("heading", { name: "Ficha de cliente" })).toBeVisible();
     await expect(page.getByText("Vista operativa del cliente")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Unidad fiscal y vinculacion" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Expedientes por ejercicio" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Unidad fiscal", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Activos patrimoniales" })).toBeVisible();
 
     await page.goto("/login");
     await expect(
       page
         .getByRole("heading", { name: "Acceso al despacho" })
-        .or(page.getByRole("heading", { name: "Extractor-Parseador Fiscal IRPF / IP / 720" }))
+        .or(page.getByRole("heading", { name: "Mi cartera" }))
+        .or(page.getByRole("heading", { name: "Clientes asignados y expedientes en curso" }))
     ).toBeVisible();
   });
 });
@@ -483,9 +481,7 @@ test.describe("Auth y acceso despacho", () => {
       await invitePage.getByRole("button", { name: "Activar acceso seguro" }).click();
 
       await expect(
-        invitePage.getByRole("heading", {
-          name: "Extractor-Parseador Fiscal IRPF / IP / 720"
-        })
+        invitePage.getByRole("heading", { name: "Clientes asignados y expedientes en curso" })
       ).toBeVisible({ timeout: 30_000 });
 
       const invitedSessionResponse = await sessionJsonFetch<SessionPayload | { error?: string }>(
@@ -501,11 +497,37 @@ test.describe("Auth y acceso despacho", () => {
       await inviteContext.close().catch(() => null);
     }
   });
+
+  test("admin estructura unidad fiscal del cliente", async ({ page }) => {
+    await ensureAuthenticated(page);
+    const runId = Date.now();
+    const createdClient = await createClient(page, `fiscal-unit-${runId}`);
+
+    await page.goto(`/clientes/${createdClient.reference}`);
+    await expect(page.getByRole("heading", { name: "Unidad fiscal y vinculacion" })).toBeVisible();
+
+    await page.getByLabel("Sujeto pasivo").fill(`Playwright Unit ${runId}`);
+    await page.getByLabel("NIF del sujeto pasivo").fill(createdClient.nif);
+    await page.getByLabel("Alcance declarativo").selectOption("joint");
+    await page.getByLabel("Condicion del declarante").selectOption("titular");
+    await page.getByLabel("Condicion del conyuge").selectOption("titular");
+    await page.getByLabel("Conyuge").fill("Conyuge Playwright");
+    await page.getByLabel("NIF del conyuge").fill("87654321B");
+    await page.getByLabel("Vinculacion fiscal").selectOption("gananciales");
+    await page.getByLabel("Notas de unidad fiscal").fill("Unidad fiscal de prueba");
+
+    await page.getByRole("button", { name: "Guardar unidad fiscal" }).click();
+    await expect(page.getByText("Unidad fiscal actualizada.")).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByLabel("Sujeto pasivo")).toHaveValue(`Playwright Unit ${runId}`);
+    await expect(page.getByLabel("Alcance declarativo")).toHaveValue("joint");
+    await expect(page.getByLabel("Conyuge")).toHaveValue("Conyuge Playwright");
+    await expect(page.getByLabel("Vinculacion fiscal")).toHaveValue("gananciales");
+  });
 });
 
 test.describe("Ciclo critico IRPF", () => {
-  test.setTimeout(90_000);
-
   test.skip(
     runningWithLocalServer && !hasLocalSupabaseConfig,
     "Este ciclo necesita Supabase configurado en local o ejecutar contra un entorno desplegado via E2E_BASE_URL."
@@ -514,14 +536,15 @@ test.describe("Ciclo critico IRPF", () => {
   test("ui upload -> intake con signed URLs", async ({ page }) => {
     await ensureAuthenticated(page);
     const runId = Date.now();
-    const expedienteRef = `pw-ui-${runId}`;
     const filename = `pw_ui_${runId}.pdf`;
     const tinyPdf = Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF");
     const createdClient = await createClient(page, `ui-${runId}`);
+    const createdExpediente = await createExpediente(page, createdClient.id, `ui-${runId}`);
 
-    await page.goto(`/expedientes/${expedienteRef}`);
-    await expect(page.getByLabel("Cliente del expediente")).toBeVisible();
-    await page.getByLabel("Cliente del expediente").selectOption(createdClient.id);
+    await page.goto(`/expedientes/${createdExpediente.reference}?fase=documental`);
+    await expect(page.getByRole("heading", { name: "Estado documental" })).toBeVisible();
+    await expect(page.getByText("Expediente vinculado a")).toBeVisible();
+    await expect(page.getByLabel("Cliente del expediente")).toHaveCount(0);
     await page.setInputFiles("#pdf-files", {
       name: filename,
       mimeType: "application/pdf",
@@ -533,66 +556,13 @@ test.describe("Ciclo critico IRPF", () => {
     await expect(page.locator("pre")).toContainText('"accepted": 1');
   });
 
-  test("panel de ajustes crea una herencia manual y recalcula el expediente", async ({ page }) => {
-    await ensureAuthenticated(page);
-    const runId = Date.now();
-    const expedienteRef = `pw-adjust-${runId}`;
-    const createdClient = await createClient(page, `adjust-${runId}`);
-    await createExpediente(page, {
-      clientId: createdClient.id,
-      reference: expedienteRef,
-      fiscalYear: 2025,
-      modelType: "IRPF"
-    });
-
-    await page.goto(`/expedientes/${expedienteRef}`);
-    await expect(page.getByRole("heading", { name: "Ajustes fiscales manuales" })).toBeVisible();
-
-    await page.getByLabel("Tipo de ajuste").selectOption("INHERITANCE");
-    await page.getByLabel("Fecha efectiva").fill("2025-02-01");
-    await page.getByLabel("ISIN").fill("ES0000000999");
-    await page.getByLabel("Descripción").fill("Herencia Playwright");
-    await page.getByLabel(/Cantidad/).fill("3");
-    await page.getByLabel(/Coste total/).fill("270");
-    await page.getByLabel("Divisa").fill("EUR");
-    await page.getByLabel("Notas internas").fill("Alta manual por herencia en test");
-    await page.getByRole("button", { name: "Guardar ajuste" }).click();
-
-    await expect
-      .poll(async () => {
-        const expedienteResponse = await sessionJsonFetch<ExpedientePayload | { error?: string }>(
-          page,
-          `/api/expedientes/${expedienteRef}`
-        );
-
-        if (!expedienteResponse.ok) {
-          return null;
-        }
-
-        const expedienteBody = expedienteResponse.body as ExpedientePayload;
-        const lotExists =
-          expedienteBody.lots?.some(
-            (lot) => lot.isin === "ES0000000999" && Number(lot.quantity_original) === 3
-          ) ?? false;
-
-        return {
-          adjustments: expedienteBody.counts.adjustments_active ?? 0,
-          lotExists
-        };
-      }, { timeout: 20_000 })
-      .toEqual({
-        adjustments: 1,
-        lotExists: true
-      });
-  });
-
   test("intake -> review approve -> export download", async ({ page }) => {
     await ensureAuthenticated(page);
     const runId = Date.now();
-    const expedienteRef = `pw-cycle-${runId}`;
+    const createdClient = await createClient(page, `cycle-${runId}`);
+    const createdExpediente = await createExpediente(page, createdClient.id, `cycle-${runId}`);
+    const expedienteRef = createdExpediente.reference;
     const filename = `pw_cycle_${runId}.pdf`;
-    const clients = await listClients(page);
-    expect(clients.length).toBeGreaterThan(0);
 
     const intakeResponse = await sessionJsonFetch<{ accepted: number; document_id?: string; error?: string }>(
       page,
@@ -601,7 +571,6 @@ test.describe("Ciclo critico IRPF", () => {
         method: "POST",
         data: {
           expediente_id: expedienteRef,
-          client_id: clients[0].id,
           uploaded_by: "qa.playwright",
           documents: [
             {
@@ -644,7 +613,7 @@ test.describe("Ciclo critico IRPF", () => {
     await waitForPendingReviewDocument(page, expedienteRef, filename, 1);
 
     await page.goto("/review");
-    await expect(page.getByRole("heading", { name: "Bandeja de Revisión Manual" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Bandeja de trabajo" })).toBeVisible();
 
     const extractionResponse = await sessionJsonFetch<{ extraction_id?: string; error?: string }>(
       page,
@@ -669,9 +638,10 @@ test.describe("Ciclo critico IRPF", () => {
     expect(reviewResponse.ok, JSON.stringify(reviewBody)).toBeTruthy();
     expect(reviewBody.review_status).toBe("validated");
 
-    await page.goto(`/expedientes/${expedienteRef}`);
+    await page.goto(`/expedientes/${expedienteRef}?fase=modelos`);
     await expect(page.getByRole("heading", { name: `Expediente: ${expedienteRef}` })).toBeVisible();
-    await expect(page.locator("tr", { hasText: filename }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Estado declarativo" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Preparación AEAT" })).toBeVisible();
 
     await page.getByLabel("NIF del declarante").fill("12345678A");
     await page.getByRole("button", { name: "Validar y previsualizar" }).click();
@@ -684,104 +654,35 @@ test.describe("Ciclo critico IRPF", () => {
     expect(download.suggestedFilename()).toContain("MODELO_100_");
   });
 
-  test("review editable corrige registros sobre structured_document antes de aprobar", async ({ page }) => {
+  test("intake y export rechazan expedientes inexistentes", async ({ page }) => {
     await ensureAuthenticated(page);
-    const runId = Date.now();
-    const expedienteRef = `pw-review-edit-${runId}`;
-    const filename = `pw_review_${runId}.csv`;
-    const createdClient = await createClient(page, `review-${runId}`);
-    await createExpediente(page, {
-      clientId: createdClient.id,
-      reference: expedienteRef,
-      fiscalYear: 2025,
-      modelType: "IRPF"
+    const missingExpediente = `pw-missing-${Date.now()}`;
+
+    const intakeResponse = await sessionJsonFetch<{ error?: string }>(page, "/api/documents/intake", {
+      method: "POST",
+      data: {
+        expediente_id: missingExpediente,
+        documents: [
+          {
+            filename: "missing.pdf",
+            source_type: "PDF",
+            content_base64: "JVBERi0xLjQK"
+          }
+        ]
+      }
     });
 
-    const csvPayload = [
-      "Action,Description,ISIN,Amount,Currency,Quantity,Date",
-      `Buy,Compra editable ${runId},ES0000000001,1500,EUR,10,2024-05-01`
-    ].join("\n");
+    expect(intakeResponse.ok).toBeFalsy();
+    expect(intakeResponse.status).toBe(404);
+    expect((intakeResponse.body as { error?: string }).error).toContain("no existe");
 
-    const intakeResponse = await sessionJsonFetch<{ accepted: number; document_id?: string; error?: string }>(
+    const exportResponse = await sessionJsonFetch<{ error?: string }>(
       page,
-      "/api/documents/intake",
-      {
-        method: "POST",
-        data: {
-          expediente_id: expedienteRef,
-          client_id: createdClient.id,
-          uploaded_by: "qa.playwright",
-          documents: [
-            {
-              filename,
-              source_type: "CSV",
-              content_base64: Buffer.from(csvPayload).toString("base64")
-            }
-          ]
-        }
-      }
+      `/api/exports/${missingExpediente}?model=100`
     );
 
-    const intakeBody = intakeResponse.body;
-    expect(intakeResponse.ok, JSON.stringify(intakeBody)).toBeTruthy();
-    expect(intakeBody.accepted).toBe(1);
-
-    await waitForDocumentInExpediente(page, expedienteRef, filename);
-    await waitForPendingReviewDocument(page, expedienteRef, filename, 1);
-
-    await page.goto("/review");
-    await expect(page.getByRole("heading", { name: "Bandeja de Revisión Manual" })).toBeVisible();
-
-    await page.getByRole("button", { name: new RegExp(filename) }).click();
-    await expect(page.getByRole("heading", { name: filename })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Documento estructurado" })).toBeVisible();
-    await expect(page.getByText(`Compra editable ${runId}`)).toBeVisible();
-
-    await page.getByLabel("Descripción").fill(`Compra corregida ${runId}`);
-    await page.getByLabel("Importe").fill("1750.5");
-    await page.getByLabel("Cantidad").fill("12");
-    await page.getByRole("button", { name: "Guardar borrador" }).click();
-    await expect(page.getByText("Borrador de correcciones guardado. Documento sigue en revisión.")).toBeVisible();
-
-    await page.getByRole("button", { name: "Aprobar y persistir" }).click();
-    await expect(page.getByText(/Aprobado\./)).toBeVisible();
-
-    await expect
-      .poll(
-        async () => {
-          const expedienteResponse = await sessionJsonFetch<ExpedientePayload | { error?: string }>(
-            page,
-            `/api/expedientes/${expedienteRef}`
-          );
-
-          if (!expedienteResponse.ok) {
-            return null;
-          }
-
-          const expedienteBody = expedienteResponse.body as ExpedientePayload;
-          const document = expedienteBody.documents.find((item) => item.filename === filename);
-          const operation = expedienteBody.operations?.find(
-            (item) => item.description === `Compra corregida ${runId}`
-          );
-
-          if (!document || !operation) {
-            return null;
-          }
-
-          return {
-            processing_status: document.processing_status,
-            review_status: document.latest_extraction?.review_status ?? null,
-            amount: operation.amount,
-            quantity: operation.quantity
-          };
-        },
-        { timeout: 25_000 }
-      )
-      .toEqual({
-        processing_status: "completed",
-        review_status: "validated",
-        amount: 1750.5,
-        quantity: 12
-      });
+    expect(exportResponse.ok).toBeFalsy();
+    expect(exportResponse.status).toBe(404);
+    expect((exportResponse.body as { error?: string }).error).toContain("no existe");
   });
 });

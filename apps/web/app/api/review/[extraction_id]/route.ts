@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { accessErrorMessage, accessErrorStatus, assertExpedienteAccess, getCurrentSessionUser } from "@/lib/auth";
+import { findClientCompat } from "@/lib/client-store";
 import { dbTables } from "@/lib/db-tables";
-import { deriveCanonicalRegistryFromParsePayload, replaceDocumentCanonicalRegistry } from "@/lib/canonical-registry";
+import { syncExpedienteWorkflowById } from "@/lib/expediente-workflow";
 import { applyCorrectedFieldsToRecords } from "@/lib/extraction-records";
-import { normalizeParsedRecords, normalizeSourceSpans, normalizeStructuredDocument } from "@/lib/review-editor";
 import { buildOperationsFromRecords, replaceDocumentOperations } from "@/lib/operations";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
@@ -18,26 +18,60 @@ const reviewActionSchema = z.object({
 
 export const dynamic = "force-dynamic";
 
-function readString(payload: unknown, key: string): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
+function toFieldMap(value: unknown): Record<string, string | number | boolean | null> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
   }
 
-  const candidate = (payload as Record<string, unknown>)[key];
-  return typeof candidate === "string" ? candidate : null;
+  const sanitized: Record<string, string | number | boolean | null> = {};
+  for (const [key, candidate] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      candidate === null ||
+      typeof candidate === "string" ||
+      typeof candidate === "number" ||
+      typeof candidate === "boolean"
+    ) {
+      sanitized[key] = candidate;
+    }
+  }
+
+  return sanitized;
 }
 
-function readWarnings(payload: unknown): string[] {
-  if (!payload || typeof payload !== "object") {
+function toSourceSpans(value: unknown): Array<{
+  page: number;
+  start: number;
+  end: number;
+  snippet?: string;
+}> {
+  if (!Array.isArray(value)) {
     return [];
   }
 
-  const candidate = (payload as Record<string, unknown>).warnings;
-  if (!Array.isArray(candidate)) {
-    return [];
-  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
 
-  return candidate.filter((item): item is string => typeof item === "string");
+    const page = Number((item as Record<string, unknown>).page);
+    const start = Number((item as Record<string, unknown>).start);
+    const end = Number((item as Record<string, unknown>).end);
+    if (!Number.isFinite(page) || !Number.isFinite(start) || !Number.isFinite(end)) {
+      return [];
+    }
+
+    return [
+      {
+        page,
+        start,
+        end,
+        snippet:
+          typeof (item as Record<string, unknown>).snippet === "string"
+            ? ((item as Record<string, unknown>).snippet as string)
+            : undefined
+      }
+    ];
+  });
 }
 
 export async function GET(
@@ -56,7 +90,7 @@ export async function GET(
     const { data: extraction, error: extractionError } = await supabase
       .from(dbTables.extractions)
       .select(
-        "id, document_id, raw_payload, normalized_payload, confidence, requires_manual_review, review_status, reviewed_at, reviewed_by, created_at"
+        "id, document_id, confidence, review_status, normalized_payload, reviewed_at, reviewed_by, created_at"
       )
       .eq("id", extractionId)
       .single();
@@ -67,7 +101,7 @@ export async function GET(
 
     const { data: document, error: documentError } = await supabase
       .from(dbTables.documents)
-      .select("id, expediente_id, filename, source_type, processing_status, created_at")
+      .select("id, expediente_id, filename, processing_status, created_at, processed_at")
       .eq("id", extraction.document_id)
       .single();
 
@@ -77,8 +111,26 @@ export async function GET(
 
     await assertExpedienteAccess(supabase, sessionUser, document.expediente_id, "review.write");
 
-    const rawPayload = extraction.raw_payload as Record<string, unknown> | null;
-    const normalizedPayload = extraction.normalized_payload as Record<string, unknown> | null;
+    const { data: expediente, error: expedienteError } = await supabase
+      .from(dbTables.expedientes)
+      .select("id, reference, title, status, fiscal_year, model_type, client_id")
+      .eq("id", document.expediente_id)
+      .maybeSingle();
+
+    if (expedienteError || !expediente) {
+      return NextResponse.json({ error: "Expediente asociado no encontrado" }, { status: 404 });
+    }
+
+    const client = expediente.client_id ? await findClientCompat(supabase, expediente.client_id) : null;
+    const normalizedPayload =
+      extraction.normalized_payload && typeof extraction.normalized_payload === "object"
+        ? (extraction.normalized_payload as Record<string, unknown>)
+        : null;
+    const rawRecords = Array.isArray(normalizedPayload?.records) ? normalizedPayload.records : [];
+    const corrections =
+      normalizedPayload?.corrections && typeof normalizedPayload.corrections === "object"
+        ? normalizedPayload.corrections
+        : null;
 
     return NextResponse.json({
       current_user: {
@@ -89,28 +141,50 @@ export async function GET(
       extraction: {
         id: extraction.id,
         document_id: extraction.document_id,
-        expediente_id: document.expediente_id,
-        filename: document.filename,
-        source_type:
-          readString(rawPayload, "source_type") ??
-          readString(normalizedPayload, "source_type") ??
-          document.source_type,
-        processing_status: document.processing_status,
         confidence: Number(extraction.confidence ?? 0),
-        requires_manual_review: extraction.requires_manual_review,
         review_status: extraction.review_status,
         reviewed_at: extraction.reviewed_at,
         reviewed_by: extraction.reviewed_by,
-        created_at: extraction.created_at,
-        parser_strategy: readString(normalizedPayload, "parser_strategy") ?? "manual",
-        template_used: readString(normalizedPayload, "template_used") ?? "unknown.v0",
-        warnings: readWarnings(rawPayload),
-        source_spans: normalizeSourceSpans(rawPayload?.source_spans),
-        records: normalizeParsedRecords(normalizedPayload?.records),
-        asset_records: Array.isArray(normalizedPayload?.asset_records) ? normalizedPayload.asset_records : [],
-        fiscal_events: Array.isArray(normalizedPayload?.fiscal_events) ? normalizedPayload.fiscal_events : [],
-        structured_document: normalizeStructuredDocument(rawPayload?.structured_document)
-      }
+        created_at: extraction.created_at
+      },
+      document: {
+        id: document.id,
+        expediente_id: document.expediente_id,
+        filename: document.filename,
+        processing_status: document.processing_status,
+        created_at: document.created_at,
+        processed_at: document.processed_at
+      },
+      expediente: {
+        id: expediente.id,
+        reference: expediente.reference,
+        title: expediente.title,
+        status: expediente.status,
+        fiscal_year: expediente.fiscal_year,
+        model_type: expediente.model_type
+      },
+      client: client
+        ? {
+            id: client.id,
+            reference: client.reference,
+            display_name: client.display_name,
+            nif: client.nif
+          }
+        : null,
+      records: rawRecords.map((record, index) => {
+        const typedRecord = record as Record<string, unknown>;
+        return {
+          record_index: index,
+          record_type: typeof typedRecord.record_type === "string" ? typedRecord.record_type : "DESCONOCIDO",
+          confidence:
+            typeof typedRecord.confidence === "number" && Number.isFinite(typedRecord.confidence)
+              ? typedRecord.confidence
+              : 0,
+          fields: toFieldMap(typedRecord.fields),
+          source_spans: toSourceSpans(typedRecord.source_spans)
+        };
+      }),
+      corrections
     });
   } catch (error) {
     return NextResponse.json(
@@ -172,27 +246,17 @@ export async function PATCH(
       request_correction: "pending"
     };
     const newReviewStatus = reviewStatusMap[action];
-    const hasCorrections = Boolean(
-      corrected_fields && Object.keys(corrected_fields).length > 0 && action !== "reject"
-    );
 
     let updatedPayload = extraction.normalized_payload as Record<string, unknown>;
-    if (hasCorrections && corrected_fields) {
+    if (action === "approve" && corrected_fields && Object.keys(corrected_fields).length > 0) {
       const currentRecords = Array.isArray(updatedPayload.records)
         ? (updatedPayload.records as Array<Record<string, unknown>>)
         : [];
       const correctedRecords = applyCorrectedFieldsToRecords(currentRecords, corrected_fields);
-      const canonical = deriveCanonicalRegistryFromParsePayload({
-        records: correctedRecords,
-        assetRecords: updatedPayload.asset_records,
-        fiscalEvents: updatedPayload.fiscal_events
-      });
 
       updatedPayload = {
         ...updatedPayload,
         records: correctedRecords,
-        asset_records: canonical.assetRecords,
-        fiscal_events: canonical.fiscalEvents,
         corrections: corrected_fields,
         corrected_by: reviewer,
         corrected_at: new Date().toISOString()
@@ -217,15 +281,8 @@ export async function PATCH(
     }
 
     let operationsSaved = 0;
-    let assetsSaved = 0;
-    let fiscalEventsSaved = 0;
     if (action === "approve") {
       const records = (updatedPayload.records as Array<Record<string, unknown>>) ?? [];
-      const canonical = deriveCanonicalRegistryFromParsePayload({
-        records,
-        assetRecords: updatedPayload.asset_records,
-        fiscalEvents: updatedPayload.fiscal_events
-      });
       const operationsToInsert = buildOperationsFromRecords({
         records,
         expedienteId: document.expediente_id,
@@ -242,18 +299,6 @@ export async function PATCH(
           document.expediente_id,
           operationsToInsert
         );
-        const canonicalResult = await replaceDocumentCanonicalRegistry(supabase, {
-          expedienteId: document.expediente_id,
-          documentId: extraction.document_id,
-          records,
-          assetRecords: canonical.assetRecords,
-          fiscalEvents: canonical.fiscalEvents,
-          source: "MANUAL",
-          reviewedBy: reviewer,
-          manualNotes: notes
-        });
-        assetsSaved = canonicalResult.assetsSaved;
-        fiscalEventsSaved = canonicalResult.fiscalEventsSaved;
       } catch (error) {
         return NextResponse.json(
           {
@@ -265,19 +310,63 @@ export async function PATCH(
         );
       }
       operationsSaved = operationsToInsert.length;
-
-      await supabase
-        .from(dbTables.documents)
-        .update({ processing_status: "completed" })
-        .eq("id", extraction.document_id);
-    } else {
-      await supabase
-        .from(dbTables.documents)
-        .update({ processing_status: action === "reject" ? "failed" : "manual_review" })
-        .eq("id", extraction.document_id);
     }
 
-    await supabase.from(dbTables.auditLog).insert({
+    const nextDocumentState =
+      action === "approve"
+        ? {
+            processing_status: "completed",
+            manual_review_required: false,
+            processed_at: new Date().toISOString()
+          }
+        : action === "reject"
+          ? {
+              processing_status: "failed",
+              manual_review_required: false,
+              processed_at: new Date().toISOString()
+            }
+          : {
+              processing_status: "manual_review",
+              manual_review_required: true
+            };
+
+    const { error: documentStatusError } = await supabase
+      .from(dbTables.documents)
+      .update(nextDocumentState)
+      .eq("id", extraction.document_id);
+
+    if (documentStatusError) {
+      return NextResponse.json(
+        {
+          error: `Revisión guardada pero error al actualizar el estado documental: ${documentStatusError.message}`
+        },
+        { status: 500 }
+      );
+    }
+
+    if (action !== "request_correction") {
+      const { error: alertUpdateError } = await supabase
+        .from(dbTables.alerts)
+        .update({
+          status: "resolved",
+          resolved_at: new Date().toISOString(),
+          resolved_by: reviewer
+        })
+        .eq("entity_type", "document")
+        .eq("entity_id", extraction.document_id)
+        .eq("status", "open");
+
+      if (alertUpdateError) {
+        return NextResponse.json(
+          {
+            error: `Revisión guardada pero error al cerrar alertas del documento: ${alertUpdateError.message}`
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    const { error: auditError } = await supabase.from(dbTables.auditLog).insert({
       expediente_id: document.expediente_id,
       user_id: reviewer,
       action: `review.${action}`,
@@ -286,26 +375,33 @@ export async function PATCH(
       after_data: {
         review_status: newReviewStatus,
         notes,
-        operations_saved: operationsSaved,
-        assets_saved: assetsSaved,
-        fiscal_events_saved: fiscalEventsSaved
+        operations_saved: operationsSaved
       }
+    });
+
+    if (auditError) {
+      return NextResponse.json(
+        { error: `Revisión guardada pero no se pudo auditar la acción: ${auditError.message}` },
+        { status: 500 }
+      );
+    }
+
+    await syncExpedienteWorkflowById(supabase, {
+      expedienteId: document.expediente_id
+    }).catch((error) => {
+      console.error("No se pudo sincronizar workflow tras revisión manual", error);
     });
 
     return NextResponse.json({
       extraction_id: extractionId,
       review_status: newReviewStatus,
       operations_saved: operationsSaved,
-      assets_saved: assetsSaved,
-      fiscal_events_saved: fiscalEventsSaved,
       message:
         action === "approve"
-          ? `Aprobado. ${operationsSaved} operación(es), ${assetsSaved} activo(s) y ${fiscalEventsSaved} evento(s) fiscal(es) guardados.`
+          ? `Aprobado. ${operationsSaved} operación(es) guardadas en irpf_operations.`
           : action === "reject"
             ? "Documento rechazado. Requiere nueva ingesta."
-            : hasCorrections
-              ? "Borrador de correcciones guardado. Documento sigue en revisión."
-              : "Marcado para corrección."
+            : "Marcado para corrección."
     });
   } catch (error) {
     return NextResponse.json(

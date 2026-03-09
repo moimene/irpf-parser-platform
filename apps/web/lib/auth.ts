@@ -17,6 +17,7 @@ export type AppPermission =
   | "dashboard.read"
   | "clients.read"
   | "clients.write"
+  | "clients.fiscal_unit.write"
   | "expedientes.read"
   | "expedientes.write"
   | "documents.intake"
@@ -34,6 +35,7 @@ const ROLE_PERMISSIONS: Record<AppRole, readonly AppPermission[]> = {
     "dashboard.read",
     "clients.read",
     "clients.write",
+    "clients.fiscal_unit.write",
     "expedientes.read",
     "expedientes.write",
     "documents.intake",
@@ -44,6 +46,7 @@ const ROLE_PERMISSIONS: Record<AppRole, readonly AppPermission[]> = {
   fiscal_senior: [
     "dashboard.read",
     "clients.read",
+    "clients.fiscal_unit.write",
     "expedientes.read",
     "expedientes.write",
     "documents.intake",

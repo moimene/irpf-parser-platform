@@ -4,9 +4,7 @@ import {
   accessErrorMessage,
   accessErrorStatus,
   assertClientAccess,
-  assertExpedienteAccess,
   getCurrentSessionUser,
-  listAccessibleClientIds,
   requirePermission
 } from "@/lib/auth";
 import type { ParseDocumentResponse, ProcessingStatus } from "@/lib/contracts";
@@ -15,7 +13,7 @@ import { mimeTypeForDocumentSourceType } from "@/lib/document-source";
 import { normalizeExpedienteId, isUuid } from "@/lib/expediente-id";
 import { emitWorkflowEvent } from "@/lib/events";
 import { env } from "@/lib/env";
-import { deriveCanonicalRegistryFromParsePayload, replaceDocumentCanonicalRegistry } from "@/lib/canonical-registry";
+import { syncExpedienteWorkflowById } from "@/lib/expediente-workflow";
 import { buildOperationsFromRecords, replaceDocumentOperations } from "@/lib/operations";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
@@ -117,11 +115,6 @@ async function processWithParser(payload: {
 
     const parsed: ParseDocumentResponse = await response.json();
     const status: ProcessingStatus = parsed.requires_manual_review ? "manual_review" : "completed";
-    const canonical = deriveCanonicalRegistryFromParsePayload({
-      records: parsed.records,
-      assetRecords: parsed.asset_records,
-      fiscalEvents: parsed.fiscal_events
-    });
 
     const { error: updateError } = await supabase
       .from(dbTables.documents)
@@ -150,8 +143,6 @@ async function processWithParser(payload: {
       },
       normalized_payload: {
         records: parsed.records,
-        asset_records: canonical.assetRecords,
-        fiscal_events: canonical.fiscalEvents,
         parser_strategy: parsed.parser_strategy,
         template_used: parsed.template_used,
         source_type: payload.sourceType ?? "PDF"
@@ -174,15 +165,11 @@ async function processWithParser(payload: {
       });
 
       await replaceDocumentOperations(supabase, payload.documentId, payload.expedienteId, operations);
-      await replaceDocumentCanonicalRegistry(supabase, {
-        expedienteId: payload.expedienteId,
-        documentId: payload.documentId,
-        records: parsed.records,
-        assetRecords: canonical.assetRecords,
-        fiscalEvents: canonical.fiscalEvents,
-        source: "AUTO"
-      });
     }
+
+    await syncExpedienteWorkflowById(supabase, {
+      expedienteId: payload.expedienteId
+    }).catch(() => null);
 
     await emitWorkflowEvent(
       parsed.requires_manual_review ? "manual.review.required" : "parse.completed",
@@ -194,8 +181,6 @@ async function processWithParser(payload: {
         confidence: parsed.confidence,
         warnings: parsed.warnings,
         records: parsed.records.length,
-        asset_records: canonical.assetRecords.length,
-        fiscal_events: canonical.fiscalEvents.length,
         source_type: payload.sourceType ?? "PDF",
         structured_backend: parsed.structured_document?.backend ?? null,
         started_at: startedAt,
@@ -215,6 +200,10 @@ async function processWithParser(payload: {
     await emitWorkflowEvent("parse.failed", payload.documentId, payload.expedienteId, {
       error: error instanceof Error ? error.message : "error desconocido"
     });
+
+    await syncExpedienteWorkflowById(supabase, {
+      expedienteId: payload.expedienteId
+    }).catch(() => null);
   }
 }
 
@@ -255,9 +244,17 @@ export async function POST(request: Request) {
 
     const resolvedExpediente = normalizeExpedienteId(expedienteReference);
     const clientId = clientIdRaw && isUuid(clientIdRaw) ? clientIdRaw : null;
+
+    if (clientIdRaw && !clientId) {
+      return NextResponse.json(
+        { error: "Cliente inválido para la ingesta de documentos." },
+        { status: 400 }
+      );
+    }
+
     const { data: existingExpediente, error: existingExpedienteError } = await supabase
       .from(dbTables.expedientes)
-      .select("id, client_id")
+      .select("id, reference, client_id")
       .eq("id", resolvedExpediente.id)
       .maybeSingle();
 
@@ -268,60 +265,30 @@ export async function POST(request: Request) {
       );
     }
 
-    let inferredClientId: string | null = null;
-
-    if (existingExpediente) {
-      await assertExpedienteAccess(supabase, sessionUser, resolvedExpediente.id, "documents.intake");
-
-      if (existingExpediente.client_id && clientId && existingExpediente.client_id !== clientId) {
-        return NextResponse.json(
-          { error: "El expediente ya está asociado a otro cliente y no puede cambiarse desde intake." },
-          { status: 409 }
-        );
-      }
-
-      if (!existingExpediente.client_id && clientId) {
-        await assertClientAccess(supabase, sessionUser, clientId, "documents.intake");
-      }
-    } else if (clientId) {
-      await assertClientAccess(supabase, sessionUser, clientId, "documents.intake");
-    } else {
-      const accessibleClientIds = await listAccessibleClientIds(supabase, sessionUser);
-      if (accessibleClientIds.length === 1) {
-        inferredClientId = accessibleClientIds[0];
-        await assertClientAccess(supabase, sessionUser, inferredClientId, "documents.intake");
-      } else {
-        return NextResponse.json(
-          { error: "Debes asociar el expediente a un cliente antes de ingestar documentos." },
-          { status: 400 }
-        );
-      }
-    }
-
-    const resolvedClientId = clientId ?? existingExpediente?.client_id ?? inferredClientId ?? null;
-    const effectiveUploadedBy = sessionUser.reference;
-
-    const { error: expedienteError } = await supabase.from(dbTables.expedientes).upsert(
-      {
-        id: resolvedExpediente.id,
-        reference: resolvedExpediente.reference,
-        client_id: resolvedClientId,
-        fiscal_year: new Date().getFullYear(),
-        model_type: "IRPF",
-        title: `Expediente ${resolvedExpediente.reference}`,
-        status: "BORRADOR"
-      },
-      { onConflict: "id" }
-    );
-
-    if (expedienteError) {
+    if (!existingExpediente) {
       return NextResponse.json(
-        {
-          error: `No se pudo crear/actualizar expediente: ${expedienteError.message}`
-        },
-        { status: 500 }
+        { error: "El expediente no existe. Debes crearlo desde la ficha de cliente antes de ingestar documentos." },
+        { status: 404 }
       );
     }
+
+    if (!existingExpediente.client_id) {
+      return NextResponse.json(
+        { error: "El expediente no está vinculado a un cliente. Corrige la ficha antes de ingestar documentos." },
+        { status: 409 }
+      );
+    }
+
+    await assertClientAccess(supabase, sessionUser, existingExpediente.client_id, "documents.intake");
+
+    if (clientId && existingExpediente.client_id !== clientId) {
+      return NextResponse.json(
+        { error: "La ingesta solo puede realizarse sobre el cliente ya vinculado al expediente." },
+        { status: 409 }
+      );
+    }
+
+    const effectiveUploadedBy = sessionUser.reference;
 
     const items = await Promise.all(
       documents.map(async (document) => {
@@ -337,7 +304,7 @@ export async function POST(request: Request) {
           metadata: {
             uploaded_by: effectiveUploadedBy,
             entity_hint: document.entity_hint,
-            expediente_reference: resolvedExpediente.reference
+            expediente_reference: existingExpediente.reference
           }
         });
 
@@ -349,7 +316,7 @@ export async function POST(request: Request) {
           filename: document.filename,
           source_type: document.source_type ?? "PDF",
           uploaded_by: effectiveUploadedBy,
-          expediente_reference: resolvedExpediente.reference
+          expediente_reference: existingExpediente.reference
         });
 
         if (env.autoParseOnIntake) {
@@ -372,10 +339,14 @@ export async function POST(request: Request) {
       })
     );
 
+    await syncExpedienteWorkflowById(supabase, {
+      expedienteId: resolvedExpediente.id
+    }).catch(() => null);
+
     return NextResponse.json({
       document_id: items[0].document_id,
       expediente_id: resolvedExpediente.id,
-      expediente_reference: resolvedExpediente.reference,
+      expediente_reference: existingExpediente.reference,
       status: items[0].status,
       accepted: items.length,
       items,

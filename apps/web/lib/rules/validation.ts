@@ -1,8 +1,17 @@
 import { detectBlockedLosses, type TradeEvent } from "@/lib/rules-core";
+import {
+  assessModel714Requirement,
+  assessModel720Requirement,
+  type FilingDecision,
+  type Model714RequirementAssessment,
+  type Model720RequirementAssessment
+} from "@/lib/model-filing-rules";
 
 export interface ExportValidationSummary {
   validationState: "ok" | "warnings" | "errors";
   messages: string[];
+  filingDecision?: FilingDecision;
+  aeatAllowed?: boolean;
 }
 
 export function validateModel100(input: {
@@ -10,9 +19,8 @@ export function validateModel100(input: {
   unresolvedSales: number;
   pendingCostBasisSales: number;
   invalidSales: number;
-  blockedLossesCount?: number;
 }): ExportValidationSummary {
-  const blockedLossesCount = input.blockedLossesCount ?? detectBlockedLosses(input.trades).length;
+  const blockedLosses = detectBlockedLosses(input.trades);
   const messages: string[] = [];
 
   if (input.invalidSales > 0) {
@@ -33,9 +41,9 @@ export function validateModel100(input: {
     );
   }
 
-  if (blockedLossesCount > 0) {
+  if (blockedLosses.length > 0) {
     messages.push(
-      `${blockedLossesCount} perdida(s) bloqueada(s) por recompra detectada(s) en reglas 2/12 meses.`
+      `${blockedLosses.length} perdida(s) bloqueada(s) por recompra detectada(s) en reglas 2/12 meses.`
     );
   }
 
@@ -47,85 +55,177 @@ export function validateModel100(input: {
   }
 
   return {
-    validationState: blockedLossesCount > 0 ? "warnings" : "ok",
+    validationState: blockedLosses.length > 0 ? "warnings" : "ok",
     messages
   };
 }
 
 export function validateModel714(input?: {
-  totalAssets?: number;
-  invalidAssetCount?: number;
-  missingValuationCount?: number;
-  missingClassificationCount?: number;
+  totalAssets: number;
+  missingValuationAssets: number;
+  missingOwnershipAssets?: number;
+  totalValuation?: number;
+  requirementAssessment?: Model714RequirementAssessment | null;
 }): ExportValidationSummary {
-  const totalAssets = input?.totalAssets ?? 0;
-  const invalidAssetCount = input?.invalidAssetCount ?? 0;
-  const missingValuationCount = input?.missingValuationCount ?? 0;
-  const missingClassificationCount = input?.missingClassificationCount ?? 0;
+  if (!input) {
+    return {
+      validationState: "ok",
+      messages: ["Valoracion de patrimonio generada con reglas base."],
+      aeatAllowed: true
+    };
+  }
+
   const messages: string[] = [];
 
-  if (totalAssets > 0) {
-    messages.push(`Valoracion patrimonial preparada sobre ${totalAssets} activo(s) del registro canonico.`);
-  } else {
-    messages.push("Valoracion de patrimonio generada con reglas base.");
+  if (input.totalAssets === 0) {
+    messages.push("No hay activos patrimoniales consolidados para preparar el Modelo 714.");
   }
 
-  if (missingValuationCount > 0) {
-    messages.push(`${missingValuationCount} activo(s) no tienen valoracion a cierre completa para IP.`);
+  if (input.missingValuationAssets > 0) {
+    messages.push(
+      `${input.missingValuationAssets} activo(s) no tienen valoración declarable y no deberían cerrarse en Modelo 714.`
+    );
   }
 
-  if (missingClassificationCount > 0) {
-    messages.push(`${missingClassificationCount} activo(s) no tienen clasificacion patrimonial cerrada.`);
+  if ((input.missingOwnershipAssets ?? 0) > 0) {
+    messages.push(
+      `${input.missingOwnershipAssets} activo(s) no tienen titularidad o porcentaje de atribución suficiente para Modelo 714.`
+    );
   }
 
-  if (invalidAssetCount > 0) {
-    messages.push(`${invalidAssetCount} activo(s) tienen datos inconsistentes y deben revisarse antes de exportar.`);
+  if (input.totalAssets === 0 || input.missingValuationAssets > 0 || (input.missingOwnershipAssets ?? 0) > 0) {
+    return {
+      validationState: "errors",
+      messages,
+      filingDecision: "review",
+      aeatAllowed: false
+    };
+  }
+
+  const requirementAssessment =
+    input.requirementAssessment ??
+    assessModel714Requirement({
+      totalValuation: input.totalValuation ?? 0
+    });
+
+  messages.push(requirementAssessment.detail);
+
+  if (requirementAssessment.filingDecision === "file") {
+    return {
+      validationState: "ok",
+      messages,
+      filingDecision: requirementAssessment.filingDecision,
+      aeatAllowed: true
+    };
   }
 
   return {
-    validationState:
-      invalidAssetCount > 0 ? "errors" : missingValuationCount > 0 || missingClassificationCount > 0 ? "warnings" : "ok",
-    messages
+    validationState: "warnings",
+    messages,
+    filingDecision: requirementAssessment.filingDecision,
+    aeatAllowed: true
   };
 }
 
 export function validateModel720(input?: {
-  totalAssets?: number;
-  foreignAssets?: number;
-  invalidForeignAssetCount?: number;
-  missingCountryCount?: number;
-  missingOwnershipCount?: number;
+  foreignAssets: number;
+  missingForeignValuationAssets: number;
+  missingForeignCountryAssets?: number;
+  missingForeignBlockAssets?: number;
+  missingForeignOwnershipAssets?: number;
+  missingForeignQ4BalanceAssets?: number;
+  thresholdReachedBlocks?: number;
+  requirementAssessment?: Model720RequirementAssessment | null;
 }): ExportValidationSummary {
-  const totalAssets = input?.totalAssets ?? 0;
-  const foreignAssets = input?.foreignAssets ?? 0;
-  const invalidForeignAssetCount = input?.invalidForeignAssetCount ?? 0;
-  const missingCountryCount = input?.missingCountryCount ?? 0;
-  const missingOwnershipCount = input?.missingOwnershipCount ?? 0;
+  if (!input) {
+    return {
+      validationState: "ok",
+      messages: ["Umbrales de bienes en extranjero verificados en modo inicial."],
+      aeatAllowed: true
+    };
+  }
+
   const messages: string[] = [];
 
-  if (totalAssets > 0) {
+  if (input.foreignAssets === 0) {
+    messages.push("No hay activos extranjeros consolidados para preparar el Modelo 720.");
+  }
+
+  if (input.missingForeignValuationAssets > 0) {
     messages.push(
-      `${foreignAssets} activo(s) en el extranjero detectado(s) sobre ${totalAssets} activo(s) canonicos del expediente.`
+      `${input.missingForeignValuationAssets} activo(s) extranjeros no tienen valoración declarable suficiente para el Modelo 720.`
     );
-  } else {
-    messages.push("Umbrales de bienes en extranjero verificados en modo inicial.");
   }
 
-  if (missingCountryCount > 0) {
-    messages.push(`${missingCountryCount} activo(s) no tienen codigo de pais listo para el 720.`);
+  if ((input.missingForeignCountryAssets ?? 0) > 0) {
+    messages.push(
+      `${input.missingForeignCountryAssets} activo(s) extranjeros no tienen país de localización consolidado para Modelo 720.`
+    );
   }
 
-  if (missingOwnershipCount > 0) {
-    messages.push(`${missingOwnershipCount} activo(s) no tienen porcentaje de participacion informado.`);
+  if ((input.missingForeignBlockAssets ?? 0) > 0) {
+    messages.push(
+      `${input.missingForeignBlockAssets} activo(s) extranjeros no tienen bloque 720 asignado.`
+    );
   }
 
-  if (invalidForeignAssetCount > 0) {
-    messages.push(`${invalidForeignAssetCount} activo(s) extranjeros tienen clasificacion o claves AEAT invalidas.`);
+  if ((input.missingForeignOwnershipAssets ?? 0) > 0) {
+    messages.push(
+      `${input.missingForeignOwnershipAssets} activo(s) extranjeros no tienen titularidad o porcentaje de atribución suficiente para Modelo 720.`
+    );
+  }
+
+  if ((input.missingForeignQ4BalanceAssets ?? 0) > 0) {
+    messages.push(
+      `${input.missingForeignQ4BalanceAssets} cuenta(s) extranjeras no tienen saldo medio del cuarto trimestre.`
+    );
+  }
+
+  if (
+    input.foreignAssets === 0 ||
+    input.missingForeignValuationAssets > 0 ||
+    (input.missingForeignCountryAssets ?? 0) > 0 ||
+    (input.missingForeignBlockAssets ?? 0) > 0 ||
+    (input.missingForeignOwnershipAssets ?? 0) > 0 ||
+    (input.missingForeignQ4BalanceAssets ?? 0) > 0
+  ) {
+    return {
+      validationState: "errors",
+      messages,
+      filingDecision: "review",
+      aeatAllowed: false
+    };
+  }
+
+  const requirementAssessment =
+    input.requirementAssessment ??
+    assessModel720Requirement({
+      metrics: {
+        foreignBlockTotals: {
+          accounts: 0,
+          securities: 0,
+          insurance_real_estate: 0,
+          other: 0
+        },
+        thresholdReachedBlocks: []
+      }
+    });
+
+  messages.push(requirementAssessment.detail);
+
+  if (requirementAssessment.filingDecision === "file") {
+    return {
+      validationState: "ok",
+      messages,
+      filingDecision: requirementAssessment.filingDecision,
+      aeatAllowed: true
+    };
   }
 
   return {
-    validationState:
-      invalidForeignAssetCount > 0 ? "errors" : missingCountryCount > 0 || missingOwnershipCount > 0 ? "warnings" : "ok",
-    messages
+    validationState: "warnings",
+    messages,
+    filingDecision: requirementAssessment.filingDecision,
+    aeatAllowed: false
   };
 }

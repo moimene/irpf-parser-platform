@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Montserrat } from "next/font/google";
-import Link from "next/link";
+import { PrimaryNav } from "@/components/primary-nav";
 import { SessionSwitcher } from "@/components/session-switcher";
+import { runtimeEnvironmentMeta } from "@/lib/env";
 import "./globals.css";
 
 const montserrat = Montserrat({
@@ -11,55 +12,43 @@ const montserrat = Montserrat({
 });
 
 export const metadata: Metadata = {
-  title: "IRPF Parser Console",
-  description: "Consola para extracción y validación fiscal IRPF/IP/720",
+  title: "Plataforma Fiscal Patrimonial",
+  description: "Gestión por cliente, expediente anual y preparación AEAT para despacho",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const runtimeEnvironment = runtimeEnvironmentMeta();
+
   return (
     <html lang="es" className={montserrat.className}>
       <body>
         <div className="app-frame">
           <aside className="sidebar" aria-label="Navegación principal">
             <div className="sidebar-brand">
-              <strong>IRPF Parser</strong>
-              <span>Consola fiscal corporativa</span>
+              <strong>Plataforma Fiscal</strong>
+              <span>Cliente, expediente anual y modelos AEAT</span>
             </div>
-            <nav className="sidebar-nav">
-              <Link href="/" className="sidebar-link">
-                Dashboard operativo
-              </Link>
-              <Link href="/clientes" className="sidebar-link">
-                Clientes
-              </Link>
-              <Link href="/expedientes/demo-irpf-2025" className="sidebar-link">
-                Expediente demo
-              </Link>
-              <Link href="/review" className="sidebar-link">
-                Revisión manual
-              </Link>
-              <Link href="/configuracion" className="sidebar-link">
-                Configuración
-              </Link>
-            </nav>
+            <PrimaryNav />
             <div className="sidebar-meta">
-              <span>Stack: Vercel · Railway · n8n · Supabase</span>
-              <span>Normativa UX inspirada en guía Garrigues</span>
+              <span>Entrada principal: cartera asignada y expedientes por ejercicio</span>
+              <span>Documentos y parsing quedan subordinados al expediente</span>
+              <span>Entorno actual: {runtimeEnvironment.shortLabel}</span>
             </div>
           </aside>
 
           <div className="shell">
             <header className="topbar">
               <div>
-                <p className="topbar-title">Panel de Control Fiscal</p>
-                <p className="topbar-subtitle">Trazabilidad completa de extracción, reglas y exportación AEAT</p>
+                <p className="topbar-title">Despacho fiscal-patrimonial</p>
+                <p className="topbar-subtitle">Gestión operativa por cliente, ejercicio y preparación AEAT</p>
               </div>
               <div className="topbar-actions">
                 <SessionSwitcher />
                 <div className="topbar-chips" aria-label="Estado del entorno">
-                  <span className="chip success">Producción</span>
-                  <span className="chip">Parser conectado</span>
-                  <span className="chip">Workflow n8n</span>
+                  <span className={`chip env-${runtimeEnvironment.kind}`}>{runtimeEnvironment.shortLabel}</span>
+                  <span className="chip">Cartera</span>
+                  <span className="chip">Expedientes</span>
+                  <span className="chip">Modelos AEAT</span>
                 </div>
               </div>
             </header>

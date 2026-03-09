@@ -1,193 +1,180 @@
 # IRPF Parser Platform
 
-**Última actualización:** 2026-03-08 | **Versión:** 0.5.0-beta
+Ultima actualizacion: 2026-03-06
 
-Plataforma de despacho profesional para extracción, normalización y validación fiscal de documentación financiera y patrimonial. Convierte documentos y ediciones manuales en un registro canónico operativo para los modelos AEAT 100, 714 y 720.
+## Fuente de verdad actual
 
----
+La referencia operativa del proyecto ya no es solo este README. La consolidacion de estado real, alcance implementado y orden de construccion esta en:
+
+- `docs/BASELINE_FUNCIONAL_2026-03-06.md`
+- `docs/prd-traceability.md`
+
+La PRD original define la vision completa del producto. El repositorio actual refleja un `baseline operativo` ya estabilizado, pero todavia parcial frente a esa vision.
+
+Plataforma para extraccion, normalizacion y validacion fiscal de extractos financieros con stack:
+
+- `Vercel` para frontend + APIs (`apps/web`)
+- `Railway` para parser service y n8n (`services/parser`, `infra/n8n`)
+- `Supabase` para persistencia compartida (`infra/supabase`)
+- `n8n` para orquestacion de eventos de parseo
 
 ## Estado actual
 
-- **Web pública estabilizada:** [web-tan-mu-35.vercel.app](https://web-tan-mu-35.vercel.app)
-- **Git alineado con producción:** `origin/main` en commit `5db75d8`
-- **Registro canónico operativo:** perfil declarativo, activos `C/V/I/S/B/M` y eventos fiscales editables desde expediente
-- **Modelo 100:** prefiere `irpf_asset_fiscal_events` para compras y ventas canónicas de valores e IIC, con fallback a `irpf_operations`
-- **Parser:** sigue activo en producción, pero queda fuera del perímetro de esta estabilización; su revisión funcional profunda se hará en una conversación y rama aparte
+El estado real del producto hoy es:
 
----
+- `MVP operativo` para ingesta, parseo, revision manual y exportacion base.
+- `No` es todavia la consola integral de despacho para IRPF-IP-720 descrita en la PRD.
+- La build, el parser y la web productiva han sido reconciliados con este repo.
 
-## Entornos activos
+### Produccion
 
-| Servicio | URL | Estado |
-|---|---|---|
-| **Web (Vercel)** | [web-tan-mu-35.vercel.app](https://web-tan-mu-35.vercel.app) | Activo |
-| **Parser (Railway)** | `https://parser-production-0827.up.railway.app` | Activo |
-| **n8n (Railway)** | `https://n8n-production-aaf5.up.railway.app` | Activo |
-| **Supabase** | `hvlsuwdqtffiilvampxq.supabase.co` | Activo |
+- Web (alias productivo): `https://web-tan-mu-35.vercel.app`
+- Parser Railway: `https://parser-production-0827.up.railway.app`
+- n8n Railway: `https://n8n-production-aaf5.up.railway.app`
+- Supabase project ref: `hvlsuwdqtffiilvampxq`
 
-**Credenciales demo:** `demo@irpf-parser.dev` / `Demo2025!`
+Nota operativa: los previews de Vercel son volatiles. La URL estable que debe documentarse es el alias productivo.
 
----
+## Resumen consolidado
 
-## Arquitectura
+### 1) Arquitectura y contratos base (Vercel + n8n + Railway + Supabase)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        VERCEL (apps/web)                    │
-│  Next.js 14 App Router · Supabase Auth · Diseño Garrigues   │
-│                                                             │
-│  /login  /clientes  /clientes/[id]  /expedientes/[id]       │
-│  /review  /configuracion                                    │
-│                                                             │
-│  API Routes:                                                │
-│  POST /api/documents/intake        ← ingesta de PDFs        │
-│  POST /api/documents/upload-urls   ← URLs firmadas Storage  │
-│  GET  /api/expedientes/[id]        ← expediente + docs      │
-│  GET  /api/clientes                ← lista de clientes      │
-│  GET  /api/clientes/[id]           ← ficha + expedientes    │
-│  GET  /api/dashboard               ← métricas operativas    │
-│  GET  /api/review                  ← cola revisión manual   │
-│  POST /api/review/[id]             ← aprobar/rechazar       │
-│  GET  /api/exports/[id]            ← generar modelo AEAT    │
-│  POST /api/webhooks/parse-event    ← eventos del parser     │
-│  GET  /api/entity-templates        ← plantillas bancarias   │
-│  GET  /api/patrimonio              ← datos patrimoniales    │
-└──────────────────┬──────────────────────────────────────────┘
-                   │ eventos parse.* (n8n webhook)
-                   ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     RAILWAY (n8n + Parser)                  │
-│                                                             │
-│  n8n workflow: parse.started → Railway Parser → Vercel      │
-│  Parser FastAPI: /parse-document → structured_document      │
-│  PDF estructurado + CSV/XLSX determinista + fallback review │
-└──────────────────┬──────────────────────────────────────────┘
-                   │ persistencia
-                   ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    SUPABASE (PostgreSQL)                    │
-│                                                             │
-│  Auth: auth.users + irpf_users                              │
-│  Operativa: irpf_clients, irpf_user_client_assignments      │
-│  Expediente: irpf_expedientes, irpf_documents,              │
-│              irpf_extractions, irpf_exports, irpf_audit_log │
-│  Runtime fiscal: irpf_operations, irpf_lots,                │
-│                  irpf_sale_allocations,                     │
-│                  irpf_fiscal_adjustments                    │
-│  Registro canónico: irpf_declaration_profiles,              │
-│                     irpf_asset_registry,                    │
-│                     irpf_asset_fiscal_events + subtables    │
-│  Config: irpf_entity_templates                              │
-│  Storage: bucket irpf-documents (PDFs originales)           │
-└─────────────────────────────────────────────────────────────┘
-```
+- Se validaron y mantuvieron los contratos principales:
+- `POST /api/documents/intake` (ingesta)
+- `POST /parse-document` (parser en Railway)
+- `POST /api/webhooks/parse-event` (eventos parse.*)
+- `GET /api/exports/:expediente_id?model=100|714|720` (exportacion)
+- Se desplego y verifico conectividad entre servicios.
 
----
+### 2) UX corporativa inspirada en Garrigues
 
-## Stack técnico
+- Se rediseno la consola con tokens de diseño corporativos (`--g-*`) y layout sobrio orientado a operativa legal/fiscal.
+- Se aplicaron cambios sobre:
+- `apps/web/app/globals.css`
+- `apps/web/app/layout.tsx`
+- `apps/web/app/page.tsx`
+- `apps/web/app/review/page.tsx`
+- `apps/web/app/expedientes/[id]/page.tsx`
 
-| Capa | Tecnología |
-|---|---|
-| Frontend | Next.js 14 App Router, React 18, TypeScript |
-| Estilos | CSS custom con tokens `--g-*` (diseño Garrigues), Montserrat |
-| Auth | Supabase Auth (email/contraseña) + middleware Next.js |
-| Base de datos | Supabase PostgreSQL con RLS |
-| Storage | Supabase Storage (bucket `irpf-documents`) |
-| Orquestación | n8n en Railway |
-| Parser | FastAPI en Railway (`structured_document`, `pdfplumber`, `openpyxl`, `xlrd`) |
-| Despliegue web | Vercel (monorepo, directorio raíz `apps/web`) |
+### 3) Persistencia total en Supabase (MVP equipo multiusuario)
 
----
+Cambio clave: se elimino la dependencia del store en memoria para operacion real multiusuario.
+
+- Eliminado `apps/web/lib/in-memory-store.ts`.
+- Persistencia directa en Supabase para:
+- Dashboard (`/api/dashboard`)
+- Review board (`/api/review`)
+- Intake + ciclo de parseo (`/api/documents/intake`)
+- Webhooks parse.* (`/api/webhooks/parse-event`)
+- Exportes (`/api/exports/[expediente_id]`)
+- Auditoria de eventos en `irpf_audit_log`.
+
+### Aislamiento de datos: tablas `irpf_*`
+
+Se detecto colision con tablas existentes del proyecto Supabase (`public.documents` de otro dominio), por lo que el MVP IRPF usa namespace dedicado:
+
+- `irpf_expedientes`
+- `irpf_documents`
+- `irpf_extractions`
+- `irpf_operations`
+- `irpf_alerts`
+- `irpf_exports`
+- `irpf_audit_log`
+
+Esto evita acoplamiento con otros sistemas ya presentes en ese proyecto Supabase.
+
+### Migracion aplicada
+
+- Archivo migration: `infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`
+- Estado remoto confirmado via CLI: version `20260305162000` aplicada.
+
+### 4) Normalizacion de IDs de expediente
+
+Se implemento normalizacion para soportar referencias amigables en URLs (`demo-irpf-2025`, `mvp-team-prod`) sin romper FKs UUID en DB.
+
+- Helper: `apps/web/lib/expediente-id.ts`
+- Regla:
+- Si `expediente_id` ya es UUID, se usa tal cual.
+- Si no es UUID, se convierte a UUID determinista (hash estable).
+- Las APIs devuelven:
+- `expediente_id`: UUID persistente
+- `expediente_reference`: referencia funcional original
+
+### 5) Hardening de entorno
+
+- Se sanean variables de entorno con `trim` y limpieza de `\\n` escapados (`apps/web/lib/env.ts`) para evitar fallos con valores exportados por Vercel.
+- `apps/web/lib/supabase.ts` soporta `SUPABASE_SERVICE_ROLE_KEY` (preferido) y fallback `SUPABASE_PUBLISHABLE_KEY`.
+- Scripts de deploy preparados para entornos sin binario global de Vercel:
+- `scripts/deploy-preview.sh`
+- `scripts/deploy-production.sh`
+
+### 6) Validaciones ejecutadas
+
+Local:
+
+- `npm run typecheck --workspace apps/web`
+- `npm run lint --workspace apps/web`
+- `npm run build --workspace apps/web`
+- `npm run test:e2e --workspace apps/web`
+
+Infra:
+
+- `./scripts/railway-deploy-parser.sh` ejecutado
+- `railway redeploy --service n8n --yes` ejecutado
+- Webhook n8n validado (HTTP 200)
+
+Produccion:
+
+- Deploy productivo en Vercel ejecutado
+- Smoke tests y E2E del flujo critico completados sobre web productiva
 
 ## Estructura del repositorio
 
-```
-irpf-parser-platform/
-├── apps/
-│   └── web/                    ← Next.js 14 (Vercel)
-│       ├── app/                ← Pages + API Routes (App Router)
-│       │   ├── api/            ← 16 rutas API
-│       │   ├── clientes/       ← Lista y ficha de cliente
-│       │   ├── expedientes/    ← Flujo de ingesta y documentos
-│       │   ├── review/         ← Cola de revisión manual
-│       │   └── configuracion/  ← Plantillas de entidades
-│       ├── components/         ← Intake, review, export y workspace canónico
-│       ├── lib/                ← Supabase, Auth, AEAT, reglas fiscales, registro canónico
-│       └── middleware.ts       ← Protección de rutas
-├── services/
-│   └── parser/                 ← FastAPI (Railway)
-│       └── app/
-│           ├── main.py         ← Endpoint /parse-document
-│           ├── parser_engine.py ← Parseo y normalización
-│           └── structured_document.py ← Capa documental estructurada
-├── infra/
-│   ├── supabase/migrations/    ← Migraciones runtime y modelo canónico
-│   └── n8n/workflows/          ← Workflow de orquestación
-├── packages/
-│   ├── contracts/              ← Tipos TypeScript compartidos
-│   └── rules/                  ← Motor de reglas fiscales
-├── scripts/                    ← Deploy, bootstrap, migración Excel
-├── docs/                       ← Arquitectura, roadmap, setup
-└── evaluation/                 ← Framework de evaluación y goldens
-```
-
----
+- `apps/web`: consola operativa y APIs App Router
+- `services/parser`: microservicio FastAPI `/parse-document`
+- `packages/contracts`: contratos TypeScript compartidos
+- `packages/rules`: motor de reglas fiscales inicial
+- `infra/n8n/workflows`: workflow base `irpf-parser-orchestration.json`
+- `infra/supabase/migrations`: migraciones de persistencia IRPF
+- `evaluation`: framework de evaluacion y umbrales
+- `docs`: documentacion de arquitectura y setup
 
 ## Variables de entorno
 
-### Web — Vercel (`apps/web`)
+### Web (Vercel / Next.js)
 
-| Variable | Descripción | Requerida |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase | Sí |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave pública (browser) | Sí |
-| `SUPABASE_URL` | URL del proyecto Supabase (server-side) | Sí |
-| `SUPABASE_SERVICE_ROLE_KEY` | Clave de servicio (admin, server-side) | Sí |
-| `SUPABASE_PUBLISHABLE_KEY` | Alternativa a `ANON_KEY` | No |
-| `N8N_WEBHOOK_URL` | URL del webhook de n8n para eventos parse.* | Sí |
-| `PARSER_SERVICE_URL` | URL del parser en Railway | Sí |
-| `AUTO_PARSE_ON_INTAKE` | `true` para parsear automáticamente al ingestar | No |
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` (recomendado para backend)
+- `SUPABASE_PUBLISHABLE_KEY` (fallback)
+- `N8N_WEBHOOK_URL`
+- `PARSER_SERVICE_URL`
+- `AUTO_PARSE_ON_INTAKE=true|false`
 
-### n8n — Railway
+### n8n
 
-| Variable | Descripción |
-|---|---|
-| `PARSER_SERVICE_URL` | URL del parser en Railway |
-| `VERCEL_API_BASE_URL` | URL base de la web en Vercel |
-| `N8N_ENCRYPTION_KEY` | Clave de cifrado de n8n |
+- `PARSER_SERVICE_URL`
+- `VERCEL_API_BASE_URL`
+- `N8N_ENCRYPTION_KEY`
 
-### Parser — Railway
+### Parser (Railway)
 
-| Variable | Descripción |
-|---|---|
-| `PORT` | Puerto del servidor (default: 8001) |
-| `OPENAI_API_KEY` | Para fallback LLM en documentos desconocidos (opcional) |
+- `PORT` (default 8001)
 
----
+## Runbook rapido
 
-## Desarrollo local
-
-### 1. Instalar dependencias
+### 1) Instalar dependencias
 
 ```bash
 npm install
 ```
 
-### 2. Configurar variables de entorno
+### 2) Levantar web en local
 
 ```bash
-cp .env.example apps/web/.env.local
-# Editar apps/web/.env.local con los valores de Supabase
+npm run dev
 ```
 
-### 3. Levantar la web
-
-```bash
-npm run dev --workspace apps/web
-# → http://localhost:3000
-```
-
-### 4. Levantar el parser (opcional)
+### 3) Levantar parser local (opcional)
 
 ```bash
 cd services/parser
@@ -195,7 +182,7 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8001
 ```
 
-### 5. Verificar calidad
+### 4) Verificar calidad
 
 ```bash
 npm run typecheck --workspace apps/web
@@ -204,21 +191,21 @@ npm run build --workspace apps/web
 npm run test:e2e --workspace apps/web
 ```
 
----
+### 5) Despliegue
 
-## Despliegue
+Preview:
 
-### Web (Vercel)
+```bash
+./scripts/deploy-preview.sh
+```
+
+Produccion:
 
 ```bash
 ./scripts/deploy-production.sh
 ```
 
-El proyecto Vercel está configurado con `rootDirectory: apps/web`. El build se dispara automáticamente con cada push a `main`.
-
-La producción pública actual corresponde a `main@5db75d8`.
-
-### Parser + n8n (Railway)
+### 6) Operacion Railway + n8n
 
 ```bash
 ./scripts/railway-deploy-parser.sh
@@ -226,63 +213,32 @@ La producción pública actual corresponde a `main@5db75d8`.
 ./scripts/n8n-import-workflow.sh
 ```
 
-Guía completa: [`docs/vercel-mcp-n8n-railway-setup.md`](docs/vercel-mcp-n8n-railway-setup.md)
+Guia completa: `docs/vercel-mcp-n8n-railway-setup.md`
 
----
+## Riesgos y notas abiertas
 
-## Migraciones Supabase
+- El proyecto Supabase compartido contiene otros dominios; por eso IRPF se aisla en tablas `irpf_*`.
+- El runtime actual sigue sin cubrir clientes, RBAC, patrimonio avanzado, no cotizadas, BOE, RM y AEAT completa.
+- El siguiente paso recomendado ya no es "mas MVP", sino construir sobre la baseline documentada en `docs/BASELINE_FUNCIONAL_2026-03-06.md`.
 
-La base remota activa ya incluye las migraciones de auth moderna, runtime fiscal y registro canónico. Las piezas más relevantes del estado actual son:
+## Archivos clave modificados en esta ejecucion
 
-| Archivo | Descripción |
-|---|---|
-| `20260307100000_finalize_dispatch_auth_migration.sql` | auth real de despacho y retirada del fallback legacy |
-| `20260307134212_irpf_fiscal_adjustments_runtime_module.sql` | ajustes fiscales manuales |
-| `20260307160000_irpf_lots_runtime_module.sql` | lotes y runtime FIFO |
-| `20260307210000_irpf_canonical_asset_registry.sql` | registro canónico de bienes/derechos y eventos fiscales |
-| `20260307233000_irpf_capital_operation_catalog.sql` | catálogo granular de operaciones de capital |
-
-Referencia operativa consolidada: [docs/BASELINE_FUNCIONAL_2026-03-06.md](docs/BASELINE_FUNCIONAL_2026-03-06.md)
-
----
-
-## Perímetro estabilizado
-
-Lo que queda explícitamente estabilizado en esta iteración:
-
-- web pública
-- auth y operativa de despacho
-- expediente, review y export base
-- registro canónico editable
-- runtime fiscal de `100` sobre fuente canónica o legacy según disponibilidad
-
-Lo que queda deliberadamente fuera de esta estabilización:
-
-- revisión funcional profunda del parser
-- cambios de dependencias Python o `uv.lock`
-- redeploy del parser sin auditoría previa específica
-
----
-
-## Datos de demostración
-
-El cliente **FAGU** está cargado como primer cliente de la plataforma con **26.161 registros patrimoniales** migrados desde el Excel `datosRPFFAGU2025.xlsx` (157 hojas, ejercicios 2013–2025):
-
-| Categoría | Registros |
-|---|---|
-| Goldman Sachs | 12.700 |
-| Inventario / Posiciones | 8.140 |
-| Tipos de Cambio | 1.619 |
-| Citi Brokerage | 2.698 |
-| Obras de Arte | 433 |
-| Inmuebles | 297 |
-| Derivados / Forwards | 237 |
-| Private Equity | 37 |
-
-Script de migración: [`scripts/migrate_excel_to_supabase.py`](scripts/migrate_excel_to_supabase.py)
-
----
-
-## Notas de seguridad
-
-El proyecto Supabase `hvlsuwdqtffiilvampxq` es compartido con otros sistemas. Las tablas IRPF usan el prefijo `irpf_` para evitar colisiones. Las políticas RLS están activas para las tablas de la migración `20260306100000`. Para un entorno de producción real se recomienda un proyecto Supabase dedicado exclusivamente a IRPF Parser.
+- `apps/web/app/globals.css`
+- `apps/web/app/layout.tsx`
+- `apps/web/app/page.tsx`
+- `apps/web/app/review/page.tsx`
+- `apps/web/app/expedientes/[id]/page.tsx`
+- `apps/web/lib/env.ts`
+- `apps/web/lib/supabase.ts`
+- `apps/web/lib/events.ts`
+- `apps/web/lib/expediente-id.ts`
+- `apps/web/lib/db-tables.ts`
+- `apps/web/app/api/dashboard/route.ts`
+- `apps/web/app/api/review/route.ts`
+- `apps/web/app/api/documents/intake/route.ts`
+- `apps/web/app/api/webhooks/parse-event/route.ts`
+- `apps/web/app/api/exports/[expediente_id]/route.ts`
+- `apps/web/tsconfig.json`
+- `scripts/deploy-preview.sh`
+- `scripts/deploy-production.sh`
+- `infra/supabase/migrations/20260305162000_irpf_parser_schema.sql`

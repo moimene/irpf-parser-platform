@@ -3,6 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { ColumnDef } from "@tanstack/react-table";
+import { DataTable, DataTableColumnHeader } from "@/components/data-table";
+import { Badge } from "@/components/ui/badge";
+import { formatDate } from "@/lib/utils";
 
 type ClientSummary = {
   id: string;
@@ -44,16 +48,139 @@ const emptyPayload: ClientsPayload = {
   clients: []
 };
 
-function badgeClass(value: ClientSummary["status"]): string {
-  if (value === "active") return "badge success";
-  if (value === "inactive") return "badge warning";
-  return "badge";
-}
+const statusVariants: Record<ClientSummary["status"], "success" | "warning" | "default"> = {
+  active: "success",
+  inactive: "warning",
+  archived: "default",
+};
+
+const statusLabels: Record<ClientSummary["status"], string> = {
+  active: "Activo",
+  inactive: "Inactivo",
+  archived: "Archivado",
+};
+
+const columns: ColumnDef<ClientSummary, unknown>[] = [
+  {
+    accessorKey: "reference",
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Referencia" />
+    ),
+    cell: ({ row }) => (
+      <span className="font-medium text-xs text-text-secondary">{row.getValue("reference")}</span>
+    ),
+  },
+  {
+    accessorKey: "display_name",
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Nombre" />
+    ),
+    cell: ({ row }) => (
+      <div>
+        <Link
+          href={`/clientes/${row.original.reference}`}
+          className="font-bold text-brand hover:text-secondary-700 transition-colors"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {row.getValue("display_name")}
+        </Link>
+        {row.original.contact_person && (
+          <div className="text-xs text-text-secondary mt-0.5">
+            {row.original.contact_person}
+          </div>
+        )}
+      </div>
+    ),
+  },
+  {
+    accessorKey: "nif",
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="NIF" />
+    ),
+    cell: ({ row }) => (
+      <span className="font-mono text-sm">{row.getValue("nif")}</span>
+    ),
+  },
+  {
+    accessorKey: "status",
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Estado" />
+    ),
+    cell: ({ row }) => {
+      const status = row.getValue("status") as ClientSummary["status"];
+      return (
+        <Badge variant={statusVariants[status]}>
+          {statusLabels[status]}
+        </Badge>
+      );
+    },
+    filterFn: (row, id, value) => {
+      return value.includes(row.getValue(id));
+    },
+  },
+  {
+    id: "expedientes",
+    accessorFn: (row) => row.stats.expedientes,
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Expedientes" />
+    ),
+    cell: ({ row }) => {
+      const client = row.original;
+      return (
+        <div>
+          <span className="font-bold">{client.stats.expedientes}</span>
+          {client.models.length > 0 && (
+            <div className="text-xs text-text-secondary mt-0.5">
+              {client.models.join(", ")}
+            </div>
+          )}
+        </div>
+      );
+    },
+  },
+  {
+    id: "documents",
+    accessorFn: (row) => row.stats.documents,
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Documentos" />
+    ),
+    cell: ({ row }) => (
+      <span>{row.original.stats.documents}</span>
+    ),
+  },
+  {
+    id: "pending_review",
+    accessorFn: (row) => row.stats.pending_review,
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Pendientes" />
+    ),
+    cell: ({ row }) => {
+      const pending = row.original.stats.pending_review;
+      return pending > 0 ? (
+        <Badge variant="warning">{pending}</Badge>
+      ) : (
+        <span className="text-text-secondary">0</span>
+      );
+    },
+  },
+  {
+    accessorKey: "last_activity_at",
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title="Última actividad" />
+    ),
+    cell: ({ row }) => (
+      <span className="text-sm text-text-secondary">
+        {formatDate(row.getValue("last_activity_at"))}
+      </span>
+    ),
+  },
+];
 
 export function ClientsWorkspace() {
   const router = useRouter();
   const [payload, setPayload] = useState<ClientsPayload>(emptyPayload);
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [reference, setReference] = useState("");
@@ -63,10 +190,17 @@ export function ClientsWorkspace() {
   const [notes, setNotes] = useState("");
   const canCreateClient = payload.current_user?.role === "admin";
   const showReadOnlyNotice = Boolean(payload.current_user) && !canCreateClient;
+  const portfolioSummary = {
+    clients: payload.clients.length,
+    expedientes: payload.clients.reduce((sum, client) => sum + client.stats.expedientes, 0),
+    pendingReview: payload.clients.reduce((sum, client) => sum + client.stats.pending_review, 0),
+    exports: payload.clients.reduce((sum, client) => sum + client.stats.exports, 0)
+  };
 
   useEffect(() => {
     async function load() {
       try {
+        setIsLoading(true);
         const response = await fetch("/api/clientes", { cache: "no-store" });
         const body = (await response.json()) as ClientsPayload | { error: string };
         if (!response.ok) {
@@ -78,6 +212,8 @@ export function ClientsWorkspace() {
         setError(null);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "No se pudo cargar clientes");
+      } finally {
+        setIsLoading(false);
       }
     }
 
@@ -121,10 +257,55 @@ export function ClientsWorkspace() {
   return (
     <>
       <section className="card">
+        <div className="section-header">
+          <div>
+            <h2>Cartera de clientes</h2>
+            <p className="muted">
+              Vista operativa del despacho para entrar a cada cliente y desde ahi recorrer expedientes por
+              ejercicio.
+            </p>
+          </div>
+        </div>
+        <div className="kpi-grid">
+          <article className="kpi">
+            <span>Clientes visibles</span>
+            <strong>{portfolioSummary.clients}</strong>
+          </article>
+          <article className="kpi">
+            <span>Expedientes</span>
+            <strong>{portfolioSummary.expedientes}</strong>
+          </article>
+          <article className="kpi">
+            <span>En revision</span>
+            <strong>{portfolioSummary.pendingReview}</strong>
+          </article>
+          <article className="kpi">
+            <span>Exportaciones</span>
+            <strong>{portfolioSummary.exports}</strong>
+          </article>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Base de clientes del despacho</h2>
+        <DataTable
+          columns={columns}
+          data={payload.clients}
+          searchPlaceholder="Buscar por nombre, NIF o referencia..."
+          exportFilename="clientes"
+          exportSheetName="Clientes"
+          isLoading={isLoading}
+          emptyMessage="Todavia no hay clientes dados de alta."
+          onRowClick={(client) => router.push(`/clientes/${client.reference}`)}
+          pageSize={25}
+        />
+      </section>
+
+      <section className="card">
         <h2>Alta de cliente</h2>
         <p className="muted">
-          Crea la ficha operativa del cliente y deja preparada la relación con sus expedientes de IRPF,
-          Patrimonio y 720.
+          Accion administrativa para crear nuevas fichas. La navegacion principal del modulo sigue siendo la
+          cartera ya asignada.
         </p>
         {showReadOnlyNotice ? (
           <p className="badge warning" style={{ marginBottom: "12px" }}>
@@ -195,67 +376,6 @@ export function ClientsWorkspace() {
         </form>
 
         {error ? <p className="badge danger" style={{ marginTop: "12px" }}>{error}</p> : null}
-      </section>
-
-      <section className="card">
-        <h2>Base de clientes del despacho</h2>
-        {payload.clients.length === 0 ? (
-          <p className="muted">Todavía no hay clientes dados de alta en el runtime `irpf_*`.</p>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Cliente</th>
-                  <th>Estado</th>
-                  <th>Expedientes</th>
-                  <th>Operativa</th>
-                  <th>Última actividad</th>
-                </tr>
-              </thead>
-              <tbody>
-                {payload.clients.map((client) => (
-                  <tr key={client.id}>
-                    <td>
-                      <Link href={`/clientes/${client.reference}`}>
-                        <strong>{client.display_name}</strong>
-                      </Link>
-                      <br />
-                      <span className="muted" style={{ fontSize: "0.75rem" }}>
-                        {client.reference} · {client.nif}
-                      </span>
-                      {client.contact_person ? (
-                        <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
-                          Contacto: {client.contact_person}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>
-                      <span className={badgeClass(client.status)}>{client.status}</span>
-                    </td>
-                    <td>
-                      <strong>{client.stats.expedientes}</strong>
-                      <div className="muted" style={{ marginTop: "6px", fontSize: "0.75rem" }}>
-                        Modelos: {client.models.length > 0 ? client.models.join(", ") : "sin actividad"}
-                      </div>
-                    </td>
-                    <td>
-                      <div>{client.stats.documents} documento(s)</div>
-                      <div className="muted" style={{ fontSize: "0.75rem" }}>
-                        {client.stats.pending_review} en revisión · {client.stats.exports} exportación(es)
-                      </div>
-                    </td>
-                    <td>
-                      {client.last_activity_at
-                        ? new Date(client.last_activity_at).toLocaleString("es-ES")
-                        : "Sin actividad"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </section>
     </>
   );

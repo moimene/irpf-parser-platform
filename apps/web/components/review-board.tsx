@@ -1,1002 +1,294 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import type { ParsedRecord, SourceSpan, StructuredDocument, StructuredPage } from "@/lib/contracts";
+import Link from "next/link";
+import { useDeferredValue, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import {
-  buildReviewCorrectionPayload,
-  collectRelevantStructuredPages,
-  doesStructuredRowMatchRecord,
-  inferReviewFieldKind,
-  listRecordFieldKeys,
-  normalizeReviewFieldValue
-} from "@/lib/review-editor";
-
-type PendingDocument = {
-  id: string;
-  extractionId: string | null;
-  expedienteId: string;
-  filename: string;
-  sourceType: string;
-  status: string;
-  confidence: number;
-  reviewStatus: string | null;
-  recordsCount: number;
-  parserStrategy: string;
-  templateUsed: string;
-  structuredBackend: string | null;
-  createdAt: string;
-  extractedAt: string | null;
-};
-
-type OpenAlert = {
-  id: string;
-  expedienteId: string;
-  severity: "info" | "warning" | "critical";
-  message: string;
-  category: string;
-  createdAt: string;
-};
-
-type WorkflowEvent = {
-  id: string;
-  eventType: string;
-  documentId: string;
-  createdAt: string;
-};
-
-type ReviewQueuePayload = {
-  current_user?: {
-    reference: string;
-    display_name: string;
-    role: "admin" | "fiscal_senior" | "fiscal_junior" | "solo_lectura";
-  };
-  pending_documents: PendingDocument[];
-  open_alerts: OpenAlert[];
-  workflow_events: WorkflowEvent[];
-};
-
-type ReviewDetailPayload = {
-  current_user?: ReviewQueuePayload["current_user"];
-  extraction: {
-    id: string;
-    document_id: string;
-    expediente_id: string;
-    filename: string;
-    source_type: string;
-    processing_status: string;
-    confidence: number;
-    requires_manual_review: boolean;
-    review_status: string;
-    reviewed_at: string | null;
-    reviewed_by: string | null;
-    created_at: string;
-    parser_strategy: string;
-    template_used: string;
-    warnings: string[];
-    source_spans: SourceSpan[];
-    records: ParsedRecord[];
-    structured_document: StructuredDocument | null;
-  };
-};
-
-type ReviewActionResult = {
-  extraction_id: string;
-  review_status: string;
-  operations_saved: number;
-  message: string;
-  error?: string;
-};
-
-const initialPayload: ReviewQueuePayload = {
-  pending_documents: [],
-  open_alerts: [],
-  workflow_events: [],
-};
-
-const recordTypes: ParsedRecord["record_type"][] = [
-  "CUENTA",
-  "VALOR",
-  "IIC",
-  "SEGURO",
-  "INMUEBLE",
-  "BIEN_MUEBLE",
-  "DIVIDENDO",
-  "INTERES",
-  "RENTA",
-  "RETENCION",
-  "COMPRA",
-  "VENTA",
-  "POSICION",
-  "CUENTA_BANCARIA",
-  "MOVIMIENTO",
-  "DESCONOCIDO"
-];
-
-const fieldLabelMap: Record<string, string> = {
-  operation_date: "Fecha operación",
-  event_date: "Fecha evento",
-  description: "Descripción",
-  entity_name: "Entidad",
-  isin: "ISIN",
-  security_identifier: "Identificador valor",
-  account_code: "Cuenta / IBAN",
-  bic: "BIC",
-  quantity: "Cantidad",
-  amount: "Importe",
-  currency: "Divisa",
-  retention: "Retención",
-  realized_gain: "Ganancia realizada",
-  country_code: "País",
-  location_key: "Situación",
-  tax_territory_code: "Territorio fiscal",
-  condition_key: "Condición declarante",
-  asset_key: "Clave tipo bien",
-  asset_subkey: "Subclave bien",
-  incorporation_date: "Fecha incorporación",
-  origin_key: "Origen",
-  extinction_date: "Fecha extinción",
-  valuation_1_eur: "Valoración 1 EUR",
-  valuation_2_eur: "Valoración 2 EUR",
-  ownership_percentage: "% participación",
-  identification_key: "Clave identificación",
-  representation_key: "Clave representación",
-  real_estate_type_key: "Tipo inmueble",
-  real_right_description: "Derecho real",
-  movable_kind: "Tipo bien mueble"
-};
-
-const suggestedFieldsByType: Record<ParsedRecord["record_type"], string[]> = {
-  CUENTA: [
-    "condition_key",
-    "asset_key",
-    "asset_subkey",
-    "country_code",
-    "location_key",
-    "tax_territory_code",
-    "entity_name",
-    "account_code",
-    "bic",
-    "incorporation_date",
-    "origin_key",
-    "valuation_1_eur",
-    "valuation_2_eur",
-    "ownership_percentage"
-  ],
-  VALOR: [
-    "condition_key",
-    "asset_key",
-    "asset_subkey",
-    "country_code",
-    "location_key",
-    "tax_territory_code",
-    "entity_name",
-    "security_identifier",
-    "quantity",
-    "valuation_1_eur",
-    "ownership_percentage",
-    "incorporation_date",
-    "origin_key"
-  ],
-  IIC: [
-    "condition_key",
-    "asset_key",
-    "asset_subkey",
-    "country_code",
-    "location_key",
-    "entity_name",
-    "security_identifier",
-    "quantity",
-    "valuation_1_eur",
-    "ownership_percentage",
-    "incorporation_date"
-  ],
-  SEGURO: [
-    "condition_key",
-    "asset_key",
-    "asset_subkey",
-    "country_code",
-    "location_key",
-    "entity_name",
-    "valuation_1_eur",
-    "ownership_percentage",
-    "incorporation_date"
-  ],
-  INMUEBLE: [
-    "condition_key",
-    "asset_key",
-    "asset_subkey",
-    "country_code",
-    "location_key",
-    "description",
-    "real_estate_type_key",
-    "real_right_description",
-    "valuation_1_eur",
-    "valuation_2_eur",
-    "ownership_percentage",
-    "incorporation_date",
-    "origin_key"
-  ],
-  BIEN_MUEBLE: [
-    "condition_key",
-    "asset_key",
-    "asset_subkey",
-    "country_code",
-    "location_key",
-    "description",
-    "movable_kind",
-    "valuation_1_eur",
-    "ownership_percentage",
-    "incorporation_date"
-  ],
-  DIVIDENDO: ["operation_date", "description", "isin", "amount", "currency", "retention"],
-  INTERES: ["operation_date", "description", "isin", "amount", "currency", "retention"],
-  RENTA: ["event_date", "description", "amount", "currency", "retention"],
-  RETENCION: ["event_date", "description", "amount", "currency"],
-  COMPRA: ["operation_date", "description", "isin", "quantity", "amount", "currency"],
-  VENTA: ["operation_date", "description", "isin", "quantity", "amount", "currency", "realized_gain"],
-  POSICION: ["operation_date", "description", "isin", "quantity", "amount", "currency"],
-  CUENTA_BANCARIA: [
-    "entity_name",
-    "account_code",
-    "bic",
-    "country_code",
-    "location_key",
-    "valuation_1_eur",
-    "valuation_2_eur"
-  ],
-  MOVIMIENTO: ["event_date", "description", "quantity", "amount", "currency"],
-  DESCONOCIDO: ["operation_date", "description", "isin", "quantity", "amount", "currency"]
-};
-
-function badgeClass(status: string): string {
-  if (status === "manual_review" || status === "pending") return "badge warning";
-  if (status === "failed" || status === "rejected") return "badge danger";
-  if (status === "validated" || status === "completed") return "badge success";
-  return "badge info";
-}
-
-function fieldLabel(key: string): string {
-  return fieldLabelMap[key] ?? key.replaceAll("_", " ");
-}
-
-function formatTimestamp(value: string | null | undefined): string {
-  if (!value) {
-    return "Sin fecha";
-  }
-
-  return new Date(value).toLocaleString("es-ES");
-}
-
-function formatConfidence(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
-
-function getRecordFieldKeys(record: ParsedRecord): string[] {
-  const merged = new Set<string>([
-    ...suggestedFieldsByType[record.record_type],
-    ...listRecordFieldKeys(record.fields)
-  ]);
-
-  return Array.from(merged).sort((left, right) => {
-    const ordered = listRecordFieldKeys({
-      [left]: null,
-      [right]: null
-    });
-
-    if (ordered[0] === left && ordered[1] === right) {
-      return -1;
-    }
-
-    if (ordered[0] === right && ordered[1] === left) {
-      return 1;
-    }
-
-    return left.localeCompare(right);
-  });
-}
-
-function normalizeInputValue(value: ParsedRecord["fields"][string]): string {
-  if (value === null || typeof value === "boolean") {
-    return "";
-  }
-
-  return String(value);
-}
-
-function isRecordDirty(originalRecord: ParsedRecord | undefined, draftRecord: ParsedRecord): boolean {
-  if (!originalRecord) {
-    return true;
-  }
-
-  return JSON.stringify(originalRecord) !== JSON.stringify(draftRecord);
-}
-
-function getRelevantPages(
-  record: ParsedRecord | null,
-  structuredDocument: StructuredDocument | null
-): StructuredPage[] {
-  if (!structuredDocument) {
-    return [];
-  }
-
-  const pageNumbers = collectRelevantStructuredPages(record, structuredDocument);
-  return structuredDocument.pages.filter((page) => pageNumbers.includes(page.page));
-}
-
-function getSpanSnippet(span: SourceSpan, page: StructuredPage | undefined): string {
-  if (span.snippet?.trim()) {
-    return span.snippet.trim();
-  }
-
-  if (!page?.text) {
-    return "Sin snippet";
-  }
-
-  const safeStart = Math.max(0, span.start);
-  const safeEnd = Math.min(page.text.length, Math.max(span.end, safeStart + 1));
-  const excerpt = page.text.slice(safeStart, safeEnd).trim();
-  return excerpt || page.text.slice(0, 140).trim() || "Sin snippet";
-}
+  type ReviewPayload, type ReviewDetailPayload, type ReviewWorkItem,
+  type DraftRecord, type ActionOutcome, type ReviewQueueType, type ReviewPriority,
+  initialPayload, recordTypeOptions,
+  priorityLabel, queueTypeLabel, reviewStatusLabel, priorityVariant,
+  buildDraftRecords, buildCorrectedFields,
+} from "@/lib/review-types";
 
 export function ReviewBoard() {
-  const [payload, setPayload] = useState<ReviewQueuePayload>(initialPayload);
-  const [selectedExtractionId, setSelectedExtractionId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ReviewDetailPayload["extraction"] | null>(null);
-  const [draftRecords, setDraftRecords] = useState<ParsedRecord[]>([]);
-  const [reviewNotes, setReviewNotes] = useState("");
-  const [selectedRecordIndex, setSelectedRecordIndex] = useState(0);
-  const [loadingQueue, setLoadingQueue] = useState(true);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [payload, setPayload] = useState<ReviewPayload>(initialPayload);
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ReviewDetailPayload | null>(null);
+  const [draftRecords, setDraftRecords] = useState<DraftRecord[]>([]);
+  const [statusFilter, setStatusFilter] = useState<ReviewQueueType | "all">("all");
+  const [priorityFilter, setPriorityFilter] = useState<ReviewPriority | "all">("all");
+  const [modelFilter, setModelFilter] = useState("all");
+  const [yearFilter, setYearFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [queueLoading, setQueueLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<"approve" | "reject" | "request_correction" | null>(null);
-  const [actionResult, setActionResult] = useState<ReviewActionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionOutcome, setActionOutcome] = useState<ActionOutcome | null>(null);
 
-  const loadQueue = useCallback(async (preferredExtractionId?: string | null) => {
-    setLoadingQueue(true);
-
+  async function loadQueue() {
+    setQueueLoading(true);
     try {
       const response = await fetch("/api/review", { cache: "no-store" });
-      const body = (await response.json()) as ReviewQueuePayload | { error: string };
-
-      if (!response.ok) {
-        setError((body as { error: string }).error ?? "No se pudo cargar la cola de revisión");
-        return;
-      }
-
-      const nextPayload = body as ReviewQueuePayload;
-      setPayload(nextPayload);
+      const body = await response.json();
+      if (!response.ok) { setError(body.error ?? "No se pudo cargar la bandeja"); return; }
+      setPayload(body as ReviewPayload);
       setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo cargar la bandeja");
+    } finally { setQueueLoading(false); }
+  }
 
-      const availableDocument = nextPayload.pending_documents.find(
-        (document) => document.extractionId === (preferredExtractionId ?? selectedExtractionId)
-      );
-      const fallbackDocument = nextPayload.pending_documents.find((document) => Boolean(document.extractionId));
-      const nextSelection = availableDocument?.extractionId ?? fallbackDocument?.extractionId ?? null;
+  useEffect(() => { void loadQueue(); const id = window.setInterval(() => void loadQueue(), 10_000); return () => window.clearInterval(id); }, []);
 
-      setSelectedExtractionId((current) => {
-        if (preferredExtractionId !== undefined) {
-          return nextSelection;
-        }
+  const normalizedSearch = deferredSearch.trim().toLowerCase();
+  const filteredItems = payload.work_items.filter((item) => {
+    if (statusFilter !== "all" && item.queue_type !== statusFilter) return false;
+    if (priorityFilter !== "all" && item.priority_label !== priorityFilter) return false;
+    if (modelFilter !== "all" && item.model_type !== modelFilter) return false;
+    if (yearFilter !== "all" && String(item.fiscal_year) !== yearFilter) return false;
+    if (!normalizedSearch) return true;
+    return [item.filename, item.expediente_reference, item.expediente_title, item.client?.display_name ?? "", item.client?.nif ?? ""].join(" ").toLowerCase().includes(normalizedSearch);
+  });
 
-        if (!current) {
-          return nextSelection;
-        }
-
-        const currentStillExists = nextPayload.pending_documents.some(
-          (document) => document.extractionId === current
-        );
-
-        return currentStillExists ? current : nextSelection;
-      });
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "No se pudo cargar la cola de revisión");
-    } finally {
-      setLoadingQueue(false);
-    }
-  }, [selectedExtractionId]);
-
-  const loadDetail = useCallback(async (extractionId: string) => {
-    setLoadingDetail(true);
-
-    try {
-      const response = await fetch(`/api/review/${extractionId}`, { cache: "no-store" });
-      const body = (await response.json()) as ReviewDetailPayload | { error: string };
-
-      if (!response.ok) {
-        setDetail(null);
-        setDraftRecords([]);
-        setDetailError((body as { error: string }).error ?? "No se pudo cargar el detalle de revisión");
-        return;
-      }
-
-      const nextDetail = (body as ReviewDetailPayload).extraction;
-      setDetail(nextDetail);
-      setDraftRecords(nextDetail.records);
-      setSelectedRecordIndex(0);
-      setReviewNotes("");
-      setActionResult(null);
-      setDetailError(null);
-    } catch (loadError) {
-      setDetail(null);
-      setDraftRecords([]);
-      setDetailError(
-        loadError instanceof Error ? loadError.message : "No se pudo cargar el detalle de revisión"
-      );
-    } finally {
-      setLoadingDetail(false);
-    }
-  }, []);
+  const selectedItem = filteredItems.find((item) => item.document_id === selectedDocumentId) ?? filteredItems[0] ?? null;
 
   useEffect(() => {
-    let mounted = true;
-
-    async function loadMounted() {
-      if (!mounted) {
-        return;
-      }
-
-      await loadQueue(null);
-    }
-
-    void loadMounted();
-    const id = window.setInterval(() => {
-      void loadMounted();
-    }, 5000);
-
-    return () => {
-      mounted = false;
-      window.clearInterval(id);
-    };
-  }, [loadQueue]);
+    if (selectedItem && selectedItem.document_id !== selectedDocumentId) setSelectedDocumentId(selectedItem.document_id);
+    if (!selectedItem && selectedDocumentId) setSelectedDocumentId(null);
+  }, [selectedDocumentId, selectedItem]);
 
   useEffect(() => {
-    if (!selectedExtractionId) {
-      setDetail(null);
-      setDraftRecords([]);
-      setDetailError(null);
-      return;
+    let cancelled = false;
+    async function loadDetail(extractionId: string) {
+      setDetailLoading(true);
+      try {
+        const res = await fetch(`/api/review/${extractionId}`, { cache: "no-store" });
+        const body = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok) throw new Error(body?.error ?? "No se pudo cargar el detalle.");
+        setDetail(body as ReviewDetailPayload);
+        setDraftRecords(buildDraftRecords(body as ReviewDetailPayload));
+        setDetailError(null);
+      } catch (err) { if (!cancelled) { setDetail(null); setDraftRecords([]); setDetailError(err instanceof Error ? err.message : "Error"); } }
+      finally { if (!cancelled) setDetailLoading(false); }
     }
+    if (!selectedItem?.extraction_id) { setDetail(null); setDraftRecords([]); setDetailError(null); return () => { cancelled = true; }; }
+    void loadDetail(selectedItem.extraction_id);
+    return () => { cancelled = true; };
+  }, [selectedItem?.extraction_id]);
 
-    void loadDetail(selectedExtractionId);
-  }, [loadDetail, selectedExtractionId]);
+  const selectedAlerts = selectedItem ? payload.open_alerts.filter((a) => a.expediente_id === selectedItem.expediente_id) : [];
+  const selectedEvents = selectedItem ? payload.workflow_events.filter((e) => e.document_id === selectedItem.document_id).slice(0, 5) : [];
 
-  const selectedRecord = draftRecords[selectedRecordIndex] ?? null;
-  const originalRecords = detail?.records ?? [];
-  const hasUnsavedChanges = JSON.stringify(originalRecords) !== JSON.stringify(draftRecords);
-  const structuredPages = getRelevantPages(selectedRecord, detail?.structured_document ?? null);
-
-  function updateRecordField(
-    recordIndex: number,
-    fieldKey: string,
-    rawValue: string | boolean
-  ) {
-    setDraftRecords((current) =>
-      current.map((record, index) => {
-        if (index !== recordIndex) {
-          return record;
-        }
-
-        const previousValue = record.fields[fieldKey] ?? null;
-        const nextValue = normalizeReviewFieldValue(fieldKey, rawValue, previousValue);
-        return {
-          ...record,
-          fields: {
-            ...record.fields,
-            [fieldKey]: nextValue
-          }
-        };
-      })
-    );
-  }
-
-  function updateRecordType(recordIndex: number, recordType: ParsedRecord["record_type"]) {
-    setDraftRecords((current) =>
-      current.map((record, index) =>
-        index === recordIndex
-          ? {
-              ...record,
-              record_type: recordType
-            }
-          : record
-      )
-    );
-  }
-
-  async function handleReviewAction(action: "approve" | "reject" | "request_correction") {
-    if (!detail) {
-      return;
-    }
-
-    setActionLoading(action);
-
+  async function handleAction(action: "approve" | "reject" | "request_correction") {
+    if (!selectedItem?.extraction_id) { setDetailError("Sin extracción revisable."); return; }
+    setActionLoading(action); setActionMessage(null); setDetailError(null); setActionOutcome(null);
     try {
-      const response = await fetch(`/api/review/${detail.id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action,
-          notes: reviewNotes || undefined,
-          corrected_fields:
-            action === "reject" ? undefined : buildReviewCorrectionPayload(draftRecords)
-        })
+      const body: Record<string, unknown> = { action };
+      if (action === "approve") { const cf = buildCorrectedFields(detail, draftRecords); if (cf) body.corrected_fields = cf; }
+      const res = await fetch(`/api/review/${selectedItem.extraction_id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await res.json();
+      if (!res.ok) { setDetailError(result.error ?? result.message ?? "Error."); return; }
+      setActionMessage(result.message);
+      setActionOutcome({
+        tone: action === "approve" ? "success" : action === "reject" ? "warning" : "info",
+        title: action === "approve" ? "Documento incorporado al runtime fiscal" : action === "reject" ? "Documento rechazado" : "Documento en corrección",
+        detail: action === "approve" ? "La extracción sale de la cola manual." : action === "reject" ? "El documento exige nueva ingesta." : "La extracción sigue en cola manual.",
+        expediente_reference: selectedItem.expediente_reference,
+        client_reference: selectedItem.client?.reference ?? null,
+        phase_href: action === "approve" ? `/expedientes/${selectedItem.expediente_reference}?fase=canonico` : `/expedientes/${selectedItem.expediente_reference}?fase=revision`,
       });
-
-      const result = (await response.json()) as ReviewActionResult;
-      if (!response.ok) {
-        throw new Error(result.error ?? result.message ?? "No se pudo guardar la revisión");
+      await loadQueue();
+      if (selectedItem.extraction_id) {
+        const dr = await fetch(`/api/review/${selectedItem.extraction_id}`, { cache: "no-store" });
+        if (dr.ok) { const nd = await dr.json(); setDetail(nd); setDraftRecords(buildDraftRecords(nd)); }
+        else if (action !== "request_correction") { setDetail(null); setDraftRecords([]); }
       }
-
-      setActionResult(result);
-      await loadQueue(detail.id);
-
-      if (action === "request_correction") {
-        await loadDetail(detail.id);
-      }
-    } catch (actionError) {
-      setDetailError(actionError instanceof Error ? actionError.message : "No se pudo guardar la revisión");
-    } finally {
-      setActionLoading(null);
-    }
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Error."); }
+    finally { setActionLoading(null); }
   }
 
-  function handleSelectPendingDocument(document: PendingDocument) {
-    if (!document.extractionId) {
-      setDetail(null);
-      setDraftRecords([]);
-      setSelectedExtractionId(null);
-      setDetailError("Este documento no tiene extracción asociada todavía.");
-      return;
-    }
+  function updateDraftRecordType(idx: number, val: string) { setDraftRecords((c) => c.map((r, i) => i === idx ? { ...r, record_type: val } : r)); }
+  function updateDraftConfidence(idx: number, val: string) { setDraftRecords((c) => c.map((r, i) => i === idx ? { ...r, confidence: val } : r)); }
+  function updateDraftField(idx: number, key: string, val: string) { setDraftRecords((c) => c.map((r, i) => i === idx ? { ...r, fields: { ...r.fields, [key]: val } } : r)); }
 
-    if (hasUnsavedChanges && selectedExtractionId && selectedExtractionId !== document.extractionId) {
-      const shouldContinue = window.confirm(
-        "Hay cambios sin guardar en la revisión actual. Si cambias de documento los perderás. ¿Continuar?"
-      );
-
-      if (!shouldContinue) {
-        return;
-      }
-    }
-
-    setSelectedExtractionId(document.extractionId);
-  }
+  const s = payload.summary;
 
   return (
-    <div className="page">
-      <section className="review-workspace">
-        <aside className="card review-sidebar">
-          <div className="review-sidebar-header">
-            <div>
-              <h2>Cola de revisión</h2>
-              {payload.current_user ? (
-                <p className="muted">
-                  Sesión activa: <strong>{payload.current_user.display_name}</strong> · {payload.current_user.role}
-                </p>
-              ) : null}
-            </div>
-            <span className="badge info">{payload.pending_documents.length} documento(s)</span>
+    <>
+      {/* KPIs */}
+      <section className="card">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <span className="text-xs font-medium uppercase tracking-wider text-text-secondary">Bandeja de trabajo</span>
+            <h2 className="text-xl font-bold mt-1">Cola operativa</h2>
+            <p className="text-sm text-text-secondary mt-0.5">Priorización de revisión manual e incidencias documentales.</p>
           </div>
-
-          {error ? <p className="badge danger">{error}</p> : null}
-
-          {loadingQueue && payload.pending_documents.length === 0 ? (
-            <p className="muted">Cargando cola de revisión...</p>
-          ) : null}
-
-          {!error && payload.pending_documents.length === 0 ? (
-            <p className="muted">Sin documentos pendientes.</p>
-          ) : null}
-
-          <div className="review-queue-list">
-            {payload.pending_documents.map((document) => {
-              const isSelected = document.extractionId === selectedExtractionId;
-              const confidenceClass =
-                document.confidence >= 0.85 ? "success" : document.confidence >= 0.7 ? "warning" : "danger";
-
-              return (
-                <button
-                  key={document.id}
-                  type="button"
-                  className={`review-queue-item${isSelected ? " is-selected" : ""}`}
-                  onClick={() => handleSelectPendingDocument(document)}
-                >
-                  <div className="review-queue-item-header">
-                    <strong>{document.filename}</strong>
-                    <span className={badgeClass(document.status)}>{document.status}</span>
-                  </div>
-                  <div className="review-queue-item-meta">
-                    <span className={`badge ${confidenceClass}`}>{formatConfidence(document.confidence)}</span>
-                    <span className="badge info">{document.sourceType}</span>
-                    <span className="badge info">{document.recordsCount} registro(s)</span>
-                  </div>
-                  <div className="review-queue-item-details">
-                    <span>{document.parserStrategy}</span>
-                    <span>{document.structuredBackend ?? "sin backend estructurado"}</span>
-                    <span>{formatTimestamp(document.createdAt)}</span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
-        <div className="review-main">
-          {detailError ? <section className="card"><p className="badge danger">{detailError}</p></section> : null}
-
-          {loadingDetail ? (
-            <section className="card">
-              <p className="muted">Cargando detalle de la extracción...</p>
-            </section>
-          ) : null}
-
-          {!loadingDetail && !detail && !detailError ? (
-            <section className="card">
-              <h2>Editor de revisión</h2>
-              <p className="muted">Selecciona un documento con extracción disponible para validar y corregir sus registros.</p>
-            </section>
-          ) : null}
-
-          {detail ? (
-            <>
-              <section className="card review-detail-header">
-                <div className="review-detail-title">
-                  <h2>{detail.filename}</h2>
-                  <p className="muted">
-                    Expediente <strong>{detail.expediente_id}</strong> · plantilla <strong>{detail.template_used}</strong> · estrategia{" "}
-                    <strong>{detail.parser_strategy}</strong>
-                  </p>
-                </div>
-
-                <div className="review-detail-badges">
-                  <span className={badgeClass(detail.processing_status)}>{detail.processing_status}</span>
-                  <span className={badgeClass(detail.review_status)}>{detail.review_status}</span>
-                  <span className="badge info">{detail.source_type}</span>
-                  <span className="badge info">{formatConfidence(detail.confidence)}</span>
-                  <span className={`badge ${hasUnsavedChanges ? "warning" : "success"}`}>
-                    {hasUnsavedChanges ? "borrador pendiente" : "sin cambios locales"}
-                  </span>
-                </div>
-
-                <div className="review-action-bar">
-                  <label className="review-notes-field">
-                    Notas de revisión
-                    <textarea
-                      value={reviewNotes}
-                      onChange={(event) => setReviewNotes(event.target.value)}
-                      placeholder="Contexto para auditoría interna o motivo de la corrección"
-                    />
-                  </label>
-
-                  <div className="review-action-buttons">
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={Boolean(actionLoading)}
-                      onClick={() => void handleReviewAction("request_correction")}
-                    >
-                      {actionLoading === "request_correction" ? "Guardando..." : "Guardar borrador"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={Boolean(actionLoading)}
-                      onClick={() => void handleReviewAction("approve")}
-                    >
-                      {actionLoading === "approve" ? "Aprobando..." : "Aprobar y persistir"}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary review-reject-button"
-                      disabled={Boolean(actionLoading)}
-                      onClick={() => void handleReviewAction("reject")}
-                    >
-                      {actionLoading === "reject" ? "Rechazando..." : "Rechazar"}
-                    </button>
-                  </div>
-                </div>
-
-                {actionResult ? (
-                  <p className="badge success review-action-result">{actionResult.message}</p>
-                ) : null}
-
-                {detail.warnings.length > 0 ? (
-                  <div className="review-warning-list">
-                    {detail.warnings.map((warning) => (
-                      <span key={warning} className="badge warning">
-                        {warning}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-
-              <div className="review-detail-grid">
-                <section className="card review-record-editor">
-                  <div className="review-record-list">
-                    {draftRecords.map((record, index) => (
-                      <button
-                        key={`${detail.id}-${index}`}
-                        type="button"
-                        className={`review-record-tab${index === selectedRecordIndex ? " is-selected" : ""}`}
-                        onClick={() => setSelectedRecordIndex(index)}
-                      >
-                        <div>
-                          <strong>Registro {index + 1}</strong>
-                          <span className="muted">
-                            {fieldLabel("description")}: {String(record.fields.description ?? "sin descripción")}
-                          </span>
-                        </div>
-                        <div className="review-record-tab-meta">
-                          <span className={badgeClass(record.record_type)}>{record.record_type}</span>
-                          <span
-                            className={`badge ${
-                              record.confidence >= 0.85 ? "success" : record.confidence >= 0.7 ? "warning" : "danger"
-                            }`}
-                          >
-                            {formatConfidence(record.confidence)}
-                          </span>
-                          {isRecordDirty(originalRecords[index], record) ? (
-                            <span className="badge warning">editado</span>
-                          ) : null}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-
-                  {selectedRecord ? (
-                    <div className="review-record-fields">
-                      <label>
-                        Tipo de registro
-                        <select
-                          value={selectedRecord.record_type}
-                          onChange={(event) =>
-                            updateRecordType(
-                              selectedRecordIndex,
-                              event.target.value as ParsedRecord["record_type"]
-                            )
-                          }
-                        >
-                          {recordTypes.map((recordType) => (
-                            <option key={recordType} value={recordType}>
-                              {recordType}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <div className="review-fields-grid">
-                        {getRecordFieldKeys(selectedRecord).map((fieldKey) => {
-                          const fieldValue = selectedRecord.fields[fieldKey] ?? null;
-                          const kind = inferReviewFieldKind(fieldKey, fieldValue);
-                          const inputId = `review-field-${selectedRecordIndex}-${fieldKey}`;
-
-                          return (
-                            <label key={fieldKey} htmlFor={inputId}>
-                              {fieldLabel(fieldKey)}
-                              {kind === "boolean" ? (
-                                <input
-                                  id={inputId}
-                                  type="checkbox"
-                                  checked={Boolean(fieldValue)}
-                                  onChange={(event) =>
-                                    updateRecordField(selectedRecordIndex, fieldKey, event.target.checked)
-                                  }
-                                />
-                              ) : (
-                                <input
-                                  id={inputId}
-                                  type={kind === "number" ? "number" : kind === "date" ? "date" : "text"}
-                                  step={kind === "number" ? "any" : undefined}
-                                  value={normalizeInputValue(fieldValue)}
-                                  onChange={(event) =>
-                                    updateRecordField(selectedRecordIndex, fieldKey, event.target.value)
-                                  }
-                                />
-                              )}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="muted">La extracción no contiene registros editables.</p>
-                  )}
-                </section>
-
-                <section className="card review-source-panel">
-                  <h3>Documento estructurado</h3>
-                  <p className="muted">
-                    Contexto documental de la extracción activa. Se muestran las páginas relevantes para el registro seleccionado.
-                  </p>
-
-                  {selectedRecord?.source_spans.length ? (
-                    <div className="review-span-list">
-                      {selectedRecord.source_spans.map((span, index) => {
-                        const page = detail.structured_document?.pages.find((item) => item.page === span.page);
-                        return (
-                          <div key={`${span.page}-${span.start}-${index}`} className="review-span-card">
-                            <span className="badge info">Página {span.page}</span>
-                            <p>{getSpanSnippet(span, page)}</p>
-                            <span className="muted">
-                              offsets {span.start}-{span.end}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="muted">Este registro no trae spans específicos; se muestra el documento completo disponible.</p>
-                  )}
-
-                  {detail.structured_document ? (
-                    <div className="review-page-list">
-                      {structuredPages.map((page) => (
-                        <article key={page.page} className="review-page-card">
-                          <div className="review-page-card-header">
-                            <strong>Página {page.page}</strong>
-                            <span className="muted">{page.tables.length} tabla(s)</span>
-                          </div>
-
-                          {page.tables.length > 0 ? (
-                            page.tables.map((table) => (
-                              <div key={table.table_id} className="review-table-card">
-                                <div className="review-table-meta">
-                                  <span className="badge info">{table.table_id}</span>
-                                  <span className="muted">{table.source}</span>
-                                </div>
-                                <div className="table-wrap">
-                                  <table>
-                                    <thead>
-                                      <tr>
-                                        {table.header.map((cell, cellIndex) => (
-                                          <th key={`${table.table_id}-head-${cellIndex}`}>
-                                            {cell ?? `col-${cellIndex + 1}`}
-                                          </th>
-                                        ))}
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {table.rows.map((row, rowIndex) => {
-                                        const matches = selectedRecord
-                                          ? doesStructuredRowMatchRecord(row, selectedRecord)
-                                          : false;
-
-                                        return (
-                                          <tr
-                                            key={`${table.table_id}-row-${rowIndex}`}
-                                            className={matches ? "review-table-row-match" : undefined}
-                                          >
-                                            {row.map((cell, cellIndex) => (
-                                              <td key={`${table.table_id}-cell-${rowIndex}-${cellIndex}`}>
-                                                {cell ?? "—"}
-                                              </td>
-                                            ))}
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <p className="muted">Sin tablas detectadas en esta página.</p>
-                          )}
-
-                          {page.text ? (
-                            <details className="review-page-text">
-                              <summary>Texto detectado</summary>
-                              <pre>{page.text}</pre>
-                            </details>
-                          ) : null}
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="muted">Esta extracción no trae `structured_document` todavía.</p>
-                  )}
-                </section>
-              </div>
-            </>
-          ) : null}
+          {payload.current_user && <p className="text-xs text-text-secondary">{payload.current_user.display_name} · {payload.current_user.role}</p>}
+        </div>
+        {error && <p className="badge danger mt-2">{error}</p>}
+        <div className="kpi-grid mt-3">
+          <article className="kpi"><span>Pendientes</span><strong>{s.pending_items}</strong></article>
+          <article className="kpi"><span>Revisión manual</span><strong>{s.manual_review_items}</strong></article>
+          <article className="kpi"><span>Incidencias</span><strong>{s.document_failures}</strong></article>
+          <article className="kpi"><span>Críticos</span><strong>{s.critical_priority_items}</strong></article>
+          <article className="kpi"><span>Alertas</span><strong>{s.open_alerts}</strong></article>
+          <article className="kpi"><span>Alertas críticas</span><strong>{s.critical_alerts}</strong></article>
         </div>
       </section>
 
-      {!error ? (
-        <section className="card">
-          <h2>Alertas fiscales abiertas</h2>
-          {payload.open_alerts.length === 0 ? (
-            <p className="muted">No hay alertas abiertas.</p>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Severidad</th>
-                    <th>Mensaje</th>
-                    <th>Categoría</th>
-                    <th>Expediente</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payload.open_alerts.map((alert) => (
-                    <tr key={alert.id}>
-                      <td>
-                        <span
-                          className={`badge ${
-                            alert.severity === "critical"
-                              ? "danger"
-                              : alert.severity === "warning"
-                                ? "warning"
-                                : "info"
-                          }`}
-                        >
-                          {alert.severity}
-                        </span>
-                      </td>
-                      <td>{alert.message}</td>
-                      <td>{alert.category}</td>
-                      <td>
-                        <span className="muted" style={{ fontSize: "0.75rem" }}>
-                          {alert.expedienteId?.slice(0, 8)}...
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      ) : null}
+      {/* Filters */}
+      <section className="card mt-4">
+        <div className="review-filters">
+          <label>Buscar<input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cliente, expediente o documento" /></label>
+          <label>Cola<select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as ReviewQueueType | "all")}><option value="all">Todas</option><option value="manual_review">Revisión manual</option><option value="document_failure">Incidencia documental</option></select></label>
+          <label>Prioridad<select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value as ReviewPriority | "all")}><option value="all">Todas</option><option value="critical">Crítica</option><option value="high">Alta</option><option value="normal">Normal</option></select></label>
+          <label>Modelo<select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)}><option value="all">Todos</option>{payload.filters.model_types.map((t) => <option key={t} value={t}>{t}</option>)}</select></label>
+          <label>Ejercicio<select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)}><option value="all">Todos</option>{payload.filters.fiscal_years.map((y) => <option key={y} value={String(y)}>{y}</option>)}</select></label>
+        </div>
+      </section>
 
-      {!error ? (
-        <section className="card">
-          <h2>Eventos de workflow recientes</h2>
-          {payload.workflow_events.length === 0 ? (
-            <p className="muted">Sin eventos registrados aún.</p>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Evento</th>
-                    <th>Documento</th>
-                    <th>Fecha</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payload.workflow_events.slice(0, 20).map((event) => (
-                    <tr key={event.id}>
-                      <td>
-                        <span
-                          className={`badge ${
-                            event.eventType === "parse.completed"
-                              ? "success"
-                              : event.eventType === "parse.failed"
-                                ? "danger"
-                                : event.eventType === "manual.review.required"
-                                  ? "warning"
-                                  : "info"
-                          }`}
-                        >
-                          {event.eventType}
-                        </span>
-                      </td>
-                      <td>
-                        <span className="muted" style={{ fontSize: "0.75rem" }}>
-                          {event.documentId?.slice(0, 8)}...
-                        </span>
-                      </td>
-                      <td>{formatTimestamp(event.createdAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      {/* Master-detail workbench */}
+      <section className="review-workbench mt-4">
+        <article className="card review-list-panel">
+          <h3 className="text-sm font-medium mb-2">Cola priorizada · {filteredItems.length} items</h3>
+          {queueLoading ? <p className="muted">Cargando...</p> : filteredItems.length === 0 ? <p className="muted">Sin trabajo pendiente.</p> : (
+            <div className="review-item-list">
+              {filteredItems.map((item) => (
+                <button key={item.document_id} type="button"
+                  className={`review-item ${selectedItem?.document_id === item.document_id ? "active" : ""}`}
+                  onClick={() => { setSelectedDocumentId(item.document_id); setActionMessage(null); }}>
+                  <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                    <Badge variant={priorityVariant(item.priority_label)}>{priorityLabel(item.priority_label)}</Badge>
+                    <Badge variant={item.queue_type === "document_failure" ? "destructive" : "warning"}>{queueTypeLabel(item.queue_type)}</Badge>
+                  </div>
+                  <strong className="text-sm">{item.client?.display_name ?? "Sin vincular"}</strong>
+                  <p className="text-xs text-text-secondary mt-0.5">{item.expediente_reference} · {item.model_type} · {item.fiscal_year}</p>
+                  <p className="text-sm mt-1">{item.filename}</p>
+                  <div className="flex gap-3 text-xs text-text-secondary mt-1">
+                    <span>Confianza {Math.round(item.confidence * 100)}%</span>
+                    <span>{item.records_count} reg.</span>
+                    <span>{item.open_alerts} alertas</span>
+                  </div>
+                  <p className="text-xs text-text-secondary mt-1">{item.next_action}</p>
+                </button>
+              ))}
             </div>
           )}
-        </section>
-      ) : null}
-    </div>
+        </article>
+
+        <article className="card review-detail-panel">
+          {!selectedItem ? (
+            actionOutcome ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2"><h3>{actionOutcome.title}</h3><Badge variant={actionOutcome.tone === "success" ? "success" : actionOutcome.tone === "warning" ? "warning" : "default"}>{actionOutcome.tone}</Badge></div>
+                <p className="text-sm text-text-secondary">{actionOutcome.detail}</p>
+                <div className="flex gap-2"><Link className="button-link" href={actionOutcome.phase_href}>Abrir expediente</Link>{actionOutcome.client_reference && <Link className="button-link secondary-link" href={`/clientes/${actionOutcome.client_reference}`}>Volver al cliente</Link>}</div>
+              </div>
+            ) : <p className="muted">Selecciona un item de la cola para ver su detalle y tomar acción.</p>
+          ) : (
+            <>
+              {/* Context header */}
+              <div className="flex items-center justify-between gap-3 flex-wrap pb-3 border-b border-border-default">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wider text-text-secondary">Revisión</p>
+                  <p className="text-sm font-bold mt-0.5">{selectedItem.filename}</p>
+                  <p className="text-xs text-text-secondary">{selectedItem.expediente_reference} · {selectedItem.client?.display_name ?? "—"}</p>
+                </div>
+                <Badge variant={priorityVariant(selectedItem.priority_label)}>{priorityLabel(selectedItem.priority_label)}</Badge>
+              </div>
+
+              {detailError && <p className="badge danger mt-2">{detailError}</p>}
+              {actionMessage && <p className="badge success mt-2">{actionMessage}</p>}
+
+              {detailLoading ? <p className="muted mt-3">Cargando detalle...</p> : detail ? (
+                <div className="space-y-4 mt-3">
+                  {/* Extraction metadata */}
+                  <div className="flex gap-4 text-xs text-text-secondary flex-wrap">
+                    <span>Estado: <Badge variant={detail.extraction.review_status === "validated" ? "success" : detail.extraction.review_status === "rejected" ? "destructive" : "warning"}>{reviewStatusLabel(detail.extraction.review_status)}</Badge></span>
+                    <span>Confianza: {Math.round(detail.extraction.confidence * 100)}%</span>
+                    {detail.extraction.reviewed_by && <span>Revisado por: {detail.extraction.reviewed_by}</span>}
+                  </div>
+
+                  {/* Records editor */}
+                  {draftRecords.map((draft, idx) => {
+                    const original = detail.records[idx];
+                    return (
+                      <div key={idx} className="p-3 rounded-md border border-border-default bg-surface-alt space-y-2">
+                        <div className="flex items-center gap-3">
+                          <label className="text-xs font-medium">Tipo
+                            <select value={draft.record_type} onChange={(e) => updateDraftRecordType(idx, e.target.value)} className="ml-1">
+                              {recordTypeOptions.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                            </select>
+                          </label>
+                          <label className="text-xs font-medium">Confianza
+                            <input type="number" step="0.01" min="0" max="1" value={draft.confidence} onChange={(e) => updateDraftConfidence(idx, e.target.value)} className="ml-1 w-16" />
+                          </label>
+                          <span className="text-xs text-text-secondary ml-auto">Registro #{idx}</span>
+                        </div>
+                        <div className="space-y-1">
+                          {Object.entries(draft.fields).map(([key, val]) => (
+                            <label key={key} className="flex items-center gap-2 text-xs">
+                              <span className="font-mono min-w-[100px] text-text-secondary">{key}</span>
+                              <input type="text" value={val} onChange={(e) => updateDraftField(idx, key, e.target.value)} className="flex-1 text-xs" />
+                            </label>
+                          ))}
+                        </div>
+                        {original?.source_spans?.length > 0 && (
+                          <div className="text-xs text-text-secondary mt-1">
+                            {original.source_spans.map((span, si) => span.snippet ? <p key={si} className="italic">«{span.snippet}» (p.{span.page})</p> : null)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Actions */}
+                  <div className="flex gap-2 flex-wrap pt-2 border-t border-border-default">
+                    <button type="button" className="button-link" disabled={!!actionLoading} onClick={() => handleAction("approve")}>
+                      {actionLoading === "approve" ? "Aprobando..." : "✓ Aprobar e incorporar"}
+                    </button>
+                    <button type="button" className="button-link secondary-link" disabled={!!actionLoading} onClick={() => handleAction("request_correction")}>
+                      {actionLoading === "request_correction" ? "Guardando..." : "Mantener en corrección"}
+                    </button>
+                    <button type="button" className="button-link danger-link" disabled={!!actionLoading} onClick={() => handleAction("reject")}>
+                      {actionLoading === "reject" ? "Rechazando..." : "✕ Rechazar"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Alerts */}
+              {selectedAlerts.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <h4 className="text-xs font-medium uppercase tracking-wider text-text-secondary">Alertas ({selectedAlerts.length})</h4>
+                  {selectedAlerts.map((alert) => (
+                    <div key={alert.id} className="flex items-start gap-2 p-2 rounded border border-border-subtle">
+                      <Badge variant={alert.severity === "critical" ? "destructive" : alert.severity === "warning" ? "warning" : "default"}>{alert.severity}</Badge>
+                      <div><p className="text-xs">{alert.message}</p><p className="text-xs text-text-secondary">{alert.category}</p></div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Events */}
+              {selectedEvents.length > 0 && (
+                <div className="mt-4 space-y-1">
+                  <h4 className="text-xs font-medium uppercase tracking-wider text-text-secondary">Eventos recientes</h4>
+                  {selectedEvents.map((ev) => (
+                    <p key={ev.id} className="text-xs text-text-secondary">{ev.event_type} · {new Date(ev.created_at).toLocaleString("es-ES")}</p>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </article>
+      </section>
+    </>
   );
 }

@@ -4,6 +4,7 @@ import { accessErrorMessage, accessErrorStatus, assertClientAccess, getCurrentSe
 import { findClientCompat } from "@/lib/client-store";
 import { dbTables } from "@/lib/db-tables";
 import { normalizeExpedienteId } from "@/lib/expediente-id";
+import { syncExpedienteWorkflowById } from "@/lib/expediente-workflow";
 import { createSupabaseAdminClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -83,6 +84,10 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
+
+    await syncExpedienteWorkflowById(supabase, {
+      expedienteId: data.id
+    }).catch(() => null);
 
     return NextResponse.json(
       {

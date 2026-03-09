@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AeatRecord } from "@/lib/aeat/format";
 import type { ParsedRecord } from "@/lib/contracts";
 import { dbTables } from "@/lib/db-tables";
+import { syncExpedienteWorkflowById } from "@/lib/expediente-workflow";
 import { rebuildExpedienteFiscalRuntime } from "@/lib/lots";
 
 type JsonObject = Record<string, unknown>;
@@ -188,6 +189,9 @@ export async function replaceDocumentOperations(
 
   if (operations.length === 0) {
     await rebuildExpedienteFiscalRuntime(supabase, expedienteId);
+    await syncExpedienteWorkflowById(supabase, { expedienteId }).catch((error) => {
+      console.error("No se pudo sincronizar workflow tras limpiar operaciones", error);
+    });
     return;
   }
 
@@ -197,6 +201,9 @@ export async function replaceDocumentOperations(
   }
 
   await rebuildExpedienteFiscalRuntime(supabase, expedienteId);
+  await syncExpedienteWorkflowById(supabase, { expedienteId }).catch((error) => {
+    console.error("No se pudo sincronizar workflow tras reemplazar operaciones", error);
+  });
 }
 
 export function toAeatRecord(row: PersistedOperationRow): AeatRecord {

@@ -6,9 +6,10 @@ export default function ReviewPage() {
   return (
     <div className="page">
       <section className="card">
-        <h1>Bandeja de Revisión Manual</h1>
+        <h1>Bandeja de trabajo</h1>
         <p className="muted">
-          Supervisa documentos de baja confianza, incidencias de parsing y alertas fiscales pendientes de validación.
+          Cola operativa del fiscalista: prioridad, contexto de cliente/expediente, edición de registros y
+          resolución de incidencias documentales y fiscales.
         </p>
       </section>
       <ReviewBoard />

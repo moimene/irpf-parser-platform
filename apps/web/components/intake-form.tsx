@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { inferDocumentSourceType, mimeTypeForDocumentSourceType } from "@/lib/document-source";
 
 type IntakeItem = {
@@ -27,6 +27,8 @@ type UploadUrlItem = {
 };
 
 type UploadUrlResponse = {
+  client_id: string;
+  expediente_reference: string;
   uploads: UploadUrlItem[];
 };
 
@@ -38,11 +40,10 @@ type ClientOption = {
   status: "active" | "inactive" | "archived";
 };
 
-type ClientsResponse = {
-  clients: ClientOption[];
-};
-
 type ExpedienteContextResponse = {
+  expediente_reference: string;
+  fiscal_year: number;
+  model_type: string;
   client: ClientOption | null;
 };
 
@@ -60,25 +61,26 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
   const [result, setResult] = useState<IntakeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
-  const [availableClients, setAvailableClients] = useState<ClientOption[]>([]);
-  const [boundClient, setBoundClient] = useState<ClientOption | null>(null);
-  const [selectedClientId, setSelectedClientId] = useState("");
+  const [context, setContext] = useState<ExpedienteContextResponse | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
   const [contextError, setContextError] = useState<string | null>(null);
 
-  const effectiveClientId = boundClient?.id ?? selectedClientId;
-  const requiresExplicitClient = !boundClient && availableClients.length > 1;
   const submitDisabled =
     submitting ||
     selectedFiles.length === 0 ||
     selectedFiles.length > 20 ||
-    (!boundClient && availableClients.length > 0 && !effectiveClientId) ||
-    contextLoading;
-
-  const selectedClient = useMemo(
-    () => availableClients.find((client) => client.id === effectiveClientId) ?? null,
-    [availableClients, effectiveClientId]
-  );
+    contextLoading ||
+    !context?.client;
+  const submitHelp =
+    contextLoading
+      ? "Resolviendo el contexto del expediente antes de habilitar la ingesta."
+      : !context?.client
+        ? "Vincula primero el expediente a un cliente para poder cargar documentación."
+        : selectedFiles.length === 0
+          ? "Selecciona al menos un PDF, CSV o Excel para iniciar la ingesta."
+          : selectedFiles.length > 20
+            ? "Reduce la selección a un máximo de 20 ficheros por petición."
+            : "Al enviar, el archivo se sube a storage, se registra en el expediente y se envía a parseo automático.";
 
   useEffect(() => {
     let cancelled = false;
@@ -87,60 +89,30 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
       setContextLoading(true);
 
       try {
-        const [clientsResponse, expedienteResponse] = await Promise.all([
-          fetch("/api/clientes", { cache: "no-store" }),
-          fetch(`/api/expedientes/${expedienteId}`, { cache: "no-store" })
-        ]);
-
-        const clientsBody = (await clientsResponse.json().catch(() => null)) as
-          | ClientsResponse
-          | { error?: string }
-          | null;
-
-        if (!clientsResponse.ok) {
-          const errorMessage =
-            clientsBody && "error" in clientsBody ? clientsBody.error : undefined;
-          throw new Error(errorMessage ?? "No se pudo cargar la cartera de clientes.");
-        }
-
-        const clients = (clientsBody as ClientsResponse).clients ?? [];
+        const expedienteResponse = await fetch(`/api/expedientes/${expedienteId}`, { cache: "no-store" });
         const expedienteBody = (await expedienteResponse.json().catch(() => null)) as
           | ExpedienteContextResponse
           | { error?: string }
           | null;
 
-        const resolvedBoundClient =
-          expedienteResponse.ok && expedienteBody && "client" in expedienteBody
-            ? expedienteBody.client
-            : null;
-
         if (cancelled) {
           return;
         }
 
-        setAvailableClients(clients);
-        setBoundClient(resolvedBoundClient);
-        setSelectedClientId((current) => {
-          if (resolvedBoundClient?.id) {
-            return resolvedBoundClient.id;
-          }
+        if (!expedienteResponse.ok) {
+          const errorMessage =
+            expedienteBody && "error" in expedienteBody ? expedienteBody.error : undefined;
+          throw new Error(errorMessage ?? "No se pudo cargar el contexto del expediente.");
+        }
 
-          if (current && clients.some((client) => client.id === current)) {
-            return current;
-          }
-
-          if (clients.length === 1) {
-            return clients[0].id;
-          }
-
-          return "";
-        });
+        setContext(expedienteBody as ExpedienteContextResponse);
         setContextError(null);
       } catch (loadError) {
         if (cancelled) {
           return;
         }
 
+        setContext(null);
         setContextError(
           loadError instanceof Error ? loadError.message : "No se pudo preparar el contexto del expediente."
         );
@@ -211,8 +183,8 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
       return;
     }
 
-    if (!effectiveClientId) {
-      setError("Selecciona el cliente al que pertenece este expediente antes de ingestar documentos.");
+    if (!context?.client) {
+      setError("El expediente debe estar vinculado a un cliente antes de ingestar documentos.");
       return;
     }
 
@@ -238,7 +210,6 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           expediente_id: expedienteId,
-          client_id: effectiveClientId,
           files: filesForUpload
         })
       });
@@ -278,7 +249,6 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           expediente_id: expedienteId,
-          client_id: effectiveClientId,
           uploaded_by: "fiscalista.demo",
           documents
         })
@@ -291,9 +261,6 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
       }
 
       setResult(payload as IntakeResponse);
-      if (!boundClient && selectedClient) {
-        setBoundClient(selectedClient);
-      }
       window.dispatchEvent(new Event("expediente:refresh"));
       setSelectedFiles([]);
       if (fileInputRef.current) {
@@ -313,45 +280,51 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
       <h2>Ingesta de Documentos</h2>
       <p className="muted">
         Sube hasta 20 documentos bancarios en PDF, CSV o Excel. Los ficheros se cargan directamente
-        a Supabase Storage y luego se encolan para parseo automático en Railway.
+        a Supabase Storage y luego se encolan para parseo automático en Railway. La ingesta solo
+        opera sobre expedientes ya creados y vinculados a cliente.
       </p>
 
-      {boundClient ? (
+      <div className="workflow-help-grid">
+        <article className="stack-item">
+          <h3>1. Subida segura</h3>
+          <p className="muted" style={{ margin: 0 }}>
+            El fichero no pasa por el navegador de la aplicación: se sube a storage con URL firmada.
+          </p>
+        </article>
+        <article className="stack-item">
+          <h3>2. Registro documental</h3>
+          <p className="muted" style={{ margin: 0 }}>
+            El documento queda vinculado al expediente y al cliente antes de arrancar cualquier parseo.
+          </p>
+        </article>
+        <article className="stack-item">
+          <h3>3. Parseo e ingesta</h3>
+          <p className="muted" style={{ margin: 0 }}>
+            Si el parser responde bien, el documento pasa a completado o a revisión manual según confianza.
+          </p>
+        </article>
+        <article className="stack-item">
+          <h3>4. Siguiente paso</h3>
+          <p className="muted" style={{ margin: 0 }}>
+            El expediente se refresca para que puedas seguir en documental, revisión o canónico sin salir.
+          </p>
+        </article>
+      </div>
+
+      {context?.client ? (
         <p className="badge info" style={{ marginBottom: "12px" }}>
           Expediente vinculado a&nbsp;
-          <Link href={`/clientes/${boundClient.reference}`}>{boundClient.display_name}</Link>
-          &nbsp;· {boundClient.nif}
+          <Link href={`/clientes/${context.client.reference}`}>{context.client.display_name}</Link>
+          &nbsp;· {context.client.nif}
+          &nbsp;· {context.model_type} · ejercicio {context.fiscal_year}
         </p>
       ) : null}
 
-      {!boundClient ? (
-        <div className="form" style={{ marginBottom: "16px" }}>
-          <label htmlFor="intake-client-id">Cliente del expediente</label>
-          <select
-            id="intake-client-id"
-            value={selectedClientId}
-            onChange={(event) => setSelectedClientId(event.target.value)}
-            disabled={submitting || contextLoading || availableClients.length === 0}
-          >
-            <option value="">
-              {contextLoading
-                ? "Cargando clientes accesibles..."
-                : availableClients.length === 0
-                  ? "No hay clientes accesibles"
-                  : "Selecciona un cliente"}
-            </option>
-            {availableClients.map((client) => (
-              <option key={client.id} value={client.id}>
-                {client.display_name} · {client.nif}
-              </option>
-            ))}
-          </select>
-          <p className="muted" style={{ marginTop: "6px" }}>
-            {requiresExplicitClient
-              ? "Este expediente todavía no está asociado a un cliente. Debes elegirlo antes de subir documentos."
-              : "El cliente seleccionado se usará para abrir y vincular el expediente en la primera ingesta."}
-          </p>
-        </div>
+      {!contextLoading && !context?.client ? (
+        <p className="badge warning" style={{ marginBottom: "12px" }}>
+          Este expediente no está vinculado a cliente. Corrige la ficha del expediente antes de cargar
+          documentos.
+        </p>
       ) : null}
 
       <form className="form" onSubmit={handleSubmit}>
@@ -394,6 +367,10 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
         <button type="submit" disabled={submitDisabled}>
           {submitting ? progress || "Procesando..." : `Encolar ${selectedFiles.length || 0} documento(s)`}
         </button>
+
+        <p className="muted" style={{ margin: 0 }}>
+          {submitHelp}
+        </p>
       </form>
 
       {contextError ? <p className="badge warning">{contextError}</p> : null}
@@ -403,6 +380,10 @@ export function IntakeForm({ expedienteId, onSuccess }: IntakeFormProps) {
         <div className="result">
           <p className="badge success">
             {result.accepted} documento(s) encolado(s) — Expediente: <strong>{result.expediente_reference}</strong>
+          </p>
+          <p className="muted" style={{ marginTop: "10px" }}>
+            Siguiente paso recomendado: vuelve a la tabla documental del expediente y confirma si el documento queda en
+            `processing`, `manual_review` o `completed`.
           </p>
           <details>
             <summary className="muted">Ver detalle técnico</summary>

@@ -3,6 +3,7 @@ export const dbTables = {
   users: "irpf_users",
   userClientAssignments: "irpf_user_client_assignments",
   expedientes: "irpf_expedientes",
+  expedienteWorkflow: "irpf_expediente_workflow",
   documents: "irpf_documents",
   extractions: "irpf_extractions",
   operations: "irpf_operations",
@@ -31,6 +32,8 @@ export const dbTables = {
   fiscalAdjustments: "irpf_fiscal_adjustments",
   lots: "irpf_lots",
   saleAllocations: "irpf_sale_allocations",
+  assets: "irpf_assets",
+  fiscalEvents: "irpf_fiscal_events",
   alerts: "irpf_alerts",
   exports: "irpf_exports",
   auditLog: "irpf_audit_log"

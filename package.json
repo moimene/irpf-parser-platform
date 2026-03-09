@@ -17,6 +17,7 @@
     "lint": "npm run lint --workspace apps/web",
     "typecheck": "npm run typecheck --workspace apps/web && npm run typecheck --workspace packages/contracts && npm run typecheck --workspace packages/rules",
     "test:e2e": "npm run test:e2e --workspace apps/web",
+    "prototype:reset": "node scripts/reset-presentation-prototype.mjs --env-file .vercel/.env.presentation",
     "eval": "python3 evaluation/scripts/run_eval.py"
   }
 }
