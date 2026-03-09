@@ -1,9 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { toDeterministicCanonicalAssetId, toDeterministicCanonicalFiscalEventId } from "@/lib/canonical-id";
-import { isMissingCanonicalRuntimeRelation } from "@/lib/canonical-store";
-import type { TradeEvent } from "@/lib/rules-core";
+import { detectBlockedLosses, type TradeEvent } from "@/lib/rules-core";
 import { dbTables } from "@/lib/db-tables";
-import { deriveCanonicalAssetViews } from "@/lib/fiscal-canonical";
+import {
+  normalizeUppercase,
+  readTargetSnapshot,
+  toNullableNumber,
+  type FiscalAdjustmentRow
+} from "@/lib/fiscal-adjustments";
 
 type JsonObject = Record<string, unknown>;
 
@@ -19,7 +22,6 @@ export type RuntimeOperationRow = {
   quantity: number | string | null;
   amount: number | string | null;
   currency: string | null;
-  retention?: number | string | null;
   realized_gain: number | string | null;
   source: OperationSource;
   manual_notes: string | null;
@@ -29,7 +31,7 @@ export type RuntimeOperationRow = {
 export type PersistedLot = {
   id: string;
   expediente_id: string;
-  acquisition_operation_id: string;
+  acquisition_operation_id: string | null;
   isin: string;
   description: string | null;
   acquisition_date: string;
@@ -49,7 +51,7 @@ export type PersistedSaleAllocation = {
   expediente_id: string;
   sale_operation_id: string;
   lot_id: string;
-  acquisition_operation_id: string;
+  acquisition_operation_id: string | null;
   isin: string;
   sale_date: string;
   acquisition_date: string;
@@ -108,10 +110,29 @@ export type FiscalRuntimeIssue = {
   quantity?: number | null;
 };
 
+export type FiscalBlockedLoss = {
+  sale_operation_id: string;
+  blocked_by_buy_operation_id: string;
+  isin: string;
+  sale_date: string;
+  blocked_by_buy_date: string;
+  window_months: number;
+  sale_quantity: number;
+  blocked_by_buy_quantity: number;
+  realized_loss: number | null;
+  currency: string | null;
+  reason: string;
+  sale_description: string | null;
+  blocked_by_buy_description: string | null;
+  sale_source: OperationSource;
+  blocked_by_buy_source: OperationSource;
+};
+
 export type DerivedFiscalRuntime = {
   lots: PersistedLot[];
   allocations: PersistedSaleAllocation[];
   saleSummaries: FiscalSaleSummary[];
+  blockedLosses: FiscalBlockedLoss[];
   issues: FiscalRuntimeIssue[];
 };
 
@@ -126,8 +147,27 @@ type MutableLot = PersistedLot & {
       total_cost: number | null;
       realized_gain: number | null;
     }>;
+    transfers_out?: Array<{
+      adjustment_id: string;
+      operation_date: string;
+      quantity: number;
+      description: string | null;
+    }>;
+    acquisition_origin?: string;
+    adjustment_id?: string;
+    target_operation_id?: string | null;
   };
 };
+
+type RuntimeEvent =
+  | {
+      kind: "operation";
+      operation: RuntimeOperationRow;
+    }
+  | {
+      kind: "transfer_out";
+      adjustment: FiscalAdjustmentRow;
+    };
 
 function toNumber(value: number | string | null | undefined): number | null {
   if (typeof value === "number") {
@@ -202,6 +242,227 @@ function sumNumbers(values: Array<number | null>): number | null {
     numericValues.reduce((sum, value) => sum + value, 0),
     4
   );
+}
+
+function sortAdjustments(left: FiscalAdjustmentRow, right: FiscalAdjustmentRow): number {
+  const byDate = new Date(left.operation_date).getTime() - new Date(right.operation_date).getTime();
+  if (byDate !== 0) {
+    return byDate;
+  }
+
+  const leftCreated = left.created_at ? new Date(left.created_at).getTime() : 0;
+  const rightCreated = right.created_at ? new Date(right.created_at).getTime() : 0;
+  if (leftCreated !== rightCreated) {
+    return leftCreated - rightCreated;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function runtimeEventPriority(event: RuntimeEvent): number {
+  if (event.kind === "transfer_out") {
+    return 1;
+  }
+
+  return operationPriority(event.operation.operation_type) === 1 ? 2 : operationPriority(event.operation.operation_type);
+}
+
+function sortRuntimeEvents(left: RuntimeEvent, right: RuntimeEvent): number {
+  const leftDate =
+    left.kind === "transfer_out" ? left.adjustment.operation_date : left.operation.operation_date;
+  const rightDate =
+    right.kind === "transfer_out" ? right.adjustment.operation_date : right.operation.operation_date;
+  const byDate = new Date(leftDate).getTime() - new Date(rightDate).getTime();
+  if (byDate !== 0) {
+    return byDate;
+  }
+
+  const byPriority = runtimeEventPriority(left) - runtimeEventPriority(right);
+  if (byPriority !== 0) {
+    return byPriority;
+  }
+
+  const leftCreated =
+    left.kind === "transfer_out"
+      ? (left.adjustment.created_at ? new Date(left.adjustment.created_at).getTime() : 0)
+      : (left.operation.created_at ? new Date(left.operation.created_at).getTime() : 0);
+  const rightCreated =
+    right.kind === "transfer_out"
+      ? (right.adjustment.created_at ? new Date(right.adjustment.created_at).getTime() : 0)
+      : (right.operation.created_at ? new Date(right.operation.created_at).getTime() : 0);
+  if (leftCreated !== rightCreated) {
+    return leftCreated - rightCreated;
+  }
+
+  const leftId = left.kind === "transfer_out" ? left.adjustment.id : left.operation.id;
+  const rightId = right.kind === "transfer_out" ? right.adjustment.id : right.operation.id;
+  return leftId.localeCompare(rightId);
+}
+
+function buildAdjustmentIssue(
+  adjustment: FiscalAdjustmentRow,
+  code: string,
+  message: string,
+  quantity?: number | null
+): FiscalRuntimeIssue {
+  return {
+    code,
+    operation_id: adjustment.id,
+    isin: normalizeUppercase(adjustment.isin),
+    quantity,
+    message
+  };
+}
+
+function sameNullableNumber(left: number | null, right: number | null, tolerance = 0.000001): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  return Math.abs(left - right) <= tolerance;
+}
+
+function resolveCostBasisTargetOperation(
+  operations: RuntimeOperationRow[],
+  adjustment: FiscalAdjustmentRow
+): RuntimeOperationRow | null {
+  const directTarget = operations.find(
+    (operation) => operation.id === adjustment.target_operation_id && operation.operation_type === "COMPRA"
+  );
+
+  if (directTarget) {
+    return directTarget;
+  }
+
+  const snapshot = readTargetSnapshot(adjustment.metadata);
+  if (!snapshot) {
+    return null;
+  }
+
+  return (
+    operations.find((operation) => {
+      if (operation.operation_type !== "COMPRA") {
+        return false;
+      }
+
+      if (normalizeUppercase(operation.isin) !== normalizeUppercase(snapshot.isin)) {
+        return false;
+      }
+
+      if (operation.operation_date !== snapshot.operation_date) {
+        return false;
+      }
+
+      if (!sameNullableNumber(toNumber(operation.quantity), snapshot.quantity)) {
+        return false;
+      }
+
+      return true;
+    }) ?? null
+  );
+}
+
+function applyFiscalAdjustmentsToOperations(input: {
+  expedienteId: string;
+  operations: RuntimeOperationRow[];
+  adjustments: FiscalAdjustmentRow[];
+}): { operations: RuntimeOperationRow[]; transferOutAdjustments: FiscalAdjustmentRow[]; issues: FiscalRuntimeIssue[] } {
+  const activeAdjustments = [...input.adjustments]
+    .filter((adjustment) => adjustment.status === "ACTIVE")
+    .sort(sortAdjustments);
+  const issues: FiscalRuntimeIssue[] = [];
+  const operations = input.operations.map((operation) => ({ ...operation }));
+  const syntheticOperations: RuntimeOperationRow[] = [];
+  const transferOutAdjustments: FiscalAdjustmentRow[] = [];
+
+  for (const adjustment of activeAdjustments) {
+    if (adjustment.adjustment_type === "COST_BASIS") {
+      const target = resolveCostBasisTargetOperation(operations, adjustment);
+      if (!target) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "adjustment_target_not_found",
+            "El ajuste manual de coste no encontró una compra origen sobre la que aplicarse."
+          )
+        );
+        continue;
+      }
+
+      const resolvedQuantity = toNumber(adjustment.quantity) ?? toNumber(target.quantity);
+      if (resolvedQuantity === null || Math.abs(resolvedQuantity) <= 0) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "adjustment_invalid_quantity",
+            "El ajuste manual de coste requiere una cantidad válida mayor que cero."
+          )
+        );
+        continue;
+      }
+
+      target.operation_date = adjustment.operation_date;
+      target.isin = normalizeUppercase(adjustment.isin) ?? target.isin;
+      target.description = adjustment.description ?? target.description;
+      target.quantity = roundValue(Math.abs(resolvedQuantity), 6);
+      target.amount = toNullableNumber(adjustment.total_amount) ?? target.amount;
+      target.currency = normalizeCurrency(adjustment.currency ?? target.currency);
+      target.source = "MANUAL";
+      target.manual_notes = adjustment.notes ?? target.manual_notes;
+      continue;
+    }
+
+    if (adjustment.adjustment_type === "TRANSFER_OUT") {
+      transferOutAdjustments.push(adjustment);
+      continue;
+    }
+
+    const quantity = toNumber(adjustment.quantity);
+    if (quantity === null || Math.abs(quantity) <= 0) {
+      issues.push(
+        buildAdjustmentIssue(
+          adjustment,
+          "adjustment_invalid_quantity",
+          "El ajuste manual requiere una cantidad válida mayor que cero."
+        )
+      );
+      continue;
+    }
+
+    const isin = normalizeUppercase(adjustment.isin);
+    if (!isin) {
+      issues.push(
+        buildAdjustmentIssue(
+          adjustment,
+          "adjustment_missing_isin",
+          "El ajuste manual requiere ISIN para incorporarse al runtime fiscal."
+        )
+      );
+      continue;
+    }
+
+    syntheticOperations.push({
+      id: adjustment.id,
+      expediente_id: input.expedienteId,
+      operation_type: "COMPRA",
+      operation_date: adjustment.operation_date,
+      isin,
+      description: adjustment.description ?? adjustment.adjustment_type,
+      quantity: roundValue(Math.abs(quantity), 6),
+      amount: toNullableNumber(adjustment.total_amount),
+      currency: normalizeCurrency(adjustment.currency),
+      realized_gain: null,
+      source: "MANUAL",
+      manual_notes: adjustment.notes,
+      created_at: adjustment.created_at
+    });
+  }
+
+  return {
+    operations: [...operations, ...syntheticOperations].sort(sortOperations),
+    transferOutAdjustments: transferOutAdjustments.sort(sortAdjustments),
+    issues
+  };
 }
 
 export function summarizeSalesFromOperations(input: {
@@ -328,16 +589,161 @@ export function buildTradeEventsFromFiscalRuntime(input: {
     });
 }
 
+export function detectBlockedLossesFromFiscalRuntime(input: {
+  operations: RuntimeOperationRow[];
+  saleSummaries: FiscalSaleSummary[];
+}): FiscalBlockedLoss[] {
+  const operationById = new Map(input.operations.map((operation) => [operation.id, operation]));
+  const saleSummaryById = new Map(
+    input.saleSummaries.map((summary) => [summary.sale_operation_id, summary])
+  );
+
+  return detectBlockedLosses(
+    buildTradeEventsFromFiscalRuntime({
+      operations: input.operations,
+      saleSummaries: input.saleSummaries
+    })
+  )
+    .flatMap<FiscalBlockedLoss>((blockedLoss) => {
+      const saleOperation = operationById.get(blockedLoss.sellEventId);
+      const buyOperation = operationById.get(blockedLoss.blockedByBuyEventId);
+
+      if (!saleOperation || !buyOperation || !saleOperation.isin?.trim()) {
+        return [];
+      }
+
+      const saleSummary = saleSummaryById.get(blockedLoss.sellEventId);
+      const realizedGain = saleSummary?.realized_gain ?? toNumber(saleOperation.realized_gain);
+      const realizedLoss =
+        realizedGain !== null && realizedGain < 0 ? roundValue(Math.abs(realizedGain), 4) : null;
+
+      return [
+        {
+          sale_operation_id: saleOperation.id,
+          blocked_by_buy_operation_id: buyOperation.id,
+          isin: saleOperation.isin.trim().toUpperCase(),
+          sale_date: saleOperation.operation_date,
+          blocked_by_buy_date: buyOperation.operation_date,
+          window_months: blockedLoss.windowMonths,
+          sale_quantity: roundValue(Math.abs(toNumber(saleOperation.quantity) ?? 0), 6),
+          blocked_by_buy_quantity: roundValue(Math.abs(toNumber(buyOperation.quantity) ?? 0), 6),
+          realized_loss: realizedLoss,
+          currency: normalizeCurrency(saleSummary?.currency ?? saleOperation.currency ?? buyOperation.currency),
+          reason: blockedLoss.reason,
+          sale_description: saleSummary?.description ?? saleOperation.description ?? saleOperation.manual_notes ?? null,
+          blocked_by_buy_description:
+            buyOperation.description ?? buyOperation.manual_notes ?? null,
+          sale_source: saleOperation.source,
+          blocked_by_buy_source: buyOperation.source
+        }
+      ];
+    })
+    .sort((left, right) => {
+      const bySaleDate = new Date(left.sale_date).getTime() - new Date(right.sale_date).getTime();
+      if (bySaleDate !== 0) {
+        return bySaleDate;
+      }
+
+      const byBuyDate =
+        new Date(left.blocked_by_buy_date).getTime() - new Date(right.blocked_by_buy_date).getTime();
+      if (byBuyDate !== 0) {
+        return byBuyDate;
+      }
+
+      return left.sale_operation_id.localeCompare(right.sale_operation_id);
+    });
+}
+
 export function deriveFiscalRuntimeFromOperations(input: {
   expedienteId: string;
   operations: RuntimeOperationRow[];
+  adjustments?: FiscalAdjustmentRow[];
 }): DerivedFiscalRuntime {
-  const sortedOperations = [...input.operations].sort(sortOperations);
+  const adjustedRuntime = applyFiscalAdjustmentsToOperations({
+    expedienteId: input.expedienteId,
+    operations: input.operations,
+    adjustments: input.adjustments ?? []
+  });
+  const sortedOperations = adjustedRuntime.operations;
   const lotsByIsin = new Map<string, MutableLot[]>();
   const allocations: PersistedSaleAllocation[] = [];
-  const issues: FiscalRuntimeIssue[] = [];
+  const issues: FiscalRuntimeIssue[] = [...adjustedRuntime.issues];
+  const runtimeEvents: RuntimeEvent[] = [
+    ...sortedOperations.map((operation) => ({ kind: "operation" as const, operation })),
+    ...adjustedRuntime.transferOutAdjustments.map((adjustment) => ({
+      kind: "transfer_out" as const,
+      adjustment
+    }))
+  ].sort(sortRuntimeEvents);
 
-  for (const operation of sortedOperations) {
+  for (const runtimeEvent of runtimeEvents) {
+    if (runtimeEvent.kind === "transfer_out") {
+      const adjustment = runtimeEvent.adjustment;
+      const isin = normalizeUppercase(adjustment.isin);
+      const quantity = Math.abs(toNumber(adjustment.quantity) ?? 0);
+
+      if (!isin) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "transfer_out_missing_isin",
+            "La transferencia de salida requiere ISIN para aplicarse al runtime fiscal."
+          )
+        );
+        continue;
+      }
+
+      if (quantity <= 0) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "transfer_out_invalid_quantity",
+            "La transferencia de salida requiere una cantidad válida mayor que cero."
+          )
+        );
+        continue;
+      }
+
+      const existingLots = lotsByIsin.get(isin) ?? [];
+      let remaining = quantity;
+
+      for (const lot of existingLots) {
+        if (remaining <= 0) {
+          break;
+        }
+
+        if (lot.quantity_open <= 0) {
+          continue;
+        }
+
+        const transferredQuantity = roundValue(Math.min(remaining, lot.quantity_open), 6);
+        lot.quantity_open = roundValue(lot.quantity_open - transferredQuantity, 6);
+        lot.quantity_sold = roundValue(lot.quantity_sold + transferredQuantity, 6);
+        lot.metadata.transfers_out = lot.metadata.transfers_out ?? [];
+        lot.metadata.transfers_out.push({
+          adjustment_id: adjustment.id,
+          operation_date: adjustment.operation_date,
+          quantity: transferredQuantity,
+          description: adjustment.description ?? adjustment.notes ?? null
+        });
+        remaining = roundValue(remaining - transferredQuantity, 6);
+      }
+
+      if (remaining > 0) {
+        issues.push(
+          buildAdjustmentIssue(
+            adjustment,
+            "transfer_out_without_available_lots",
+            `La transferencia de salida de ${isin} no tiene lotes suficientes para cubrir ${remaining} títulos.`,
+            remaining
+          )
+        );
+      }
+
+      continue;
+    }
+
+    const operation = runtimeEvent.operation;
     if (!operation.isin?.trim()) {
       if (operation.operation_type === "COMPRA" || operation.operation_type === "VENTA") {
         issues.push({
@@ -369,11 +775,15 @@ export function deriveFiscalRuntimeFromOperations(input: {
       const normalizedTotalCost = totalCost === null ? null : roundValue(totalCost, 4);
       const unitCost =
         normalizedTotalCost === null ? null : roundValue(normalizedTotalCost / quantity, 8);
+      const sourceAdjustment =
+        input.adjustments?.find((adjustment) => adjustment.id === operation.id) ?? null;
+      const acquisitionOperationId =
+        sourceAdjustment && sourceAdjustment.adjustment_type !== "COST_BASIS" ? null : operation.id;
 
       const lot: MutableLot = {
         id: crypto.randomUUID(),
         expediente_id: input.expedienteId,
-        acquisition_operation_id: operation.id,
+        acquisition_operation_id: acquisitionOperationId,
         isin,
         description: operation.description ?? operation.manual_notes ?? null,
         acquisition_date: operation.operation_date,
@@ -386,7 +796,10 @@ export function deriveFiscalRuntimeFromOperations(input: {
         status: "OPEN",
         source: operation.source,
         metadata: {
-          sales: []
+          sales: [],
+          acquisition_origin: sourceAdjustment?.adjustment_type,
+          adjustment_id: sourceAdjustment?.id,
+          target_operation_id: sourceAdjustment?.target_operation_id ?? null
         }
       };
 
@@ -517,11 +930,16 @@ export function deriveFiscalRuntimeFromOperations(input: {
     operations: sortedOperations,
     allocations
   });
+  const blockedLosses = detectBlockedLossesFromFiscalRuntime({
+    operations: sortedOperations,
+    saleSummaries
+  });
 
   return {
     lots,
     allocations,
     saleSummaries,
+    blockedLosses,
     issues
   };
 }
@@ -529,6 +947,7 @@ export function deriveFiscalRuntimeFromOperations(input: {
 export function deriveLotsFromOperations(input: {
   expedienteId: string;
   operations: RuntimeOperationRow[];
+  adjustments?: FiscalAdjustmentRow[];
 }): { lots: PersistedLot[]; issues: FiscalRuntimeIssue[] } {
   const runtime = deriveFiscalRuntimeFromOperations(input);
   return {
@@ -537,354 +956,41 @@ export function deriveLotsFromOperations(input: {
   };
 }
 
-type ExpedienteCanonicalMetaRow = {
-  id: string;
-  client_id: string | null;
-  reference: string;
-  fiscal_year: number;
-  model_type: string;
-};
-
-async function syncCanonicalRuntimeCompat(
-  supabase: SupabaseClient,
-  input: {
-    expediente: ExpedienteCanonicalMetaRow;
-    operations: RuntimeOperationRow[];
-    runtime: DerivedFiscalRuntime;
-  }
-): Promise<void> {
-  const existingEventsResult = await supabase
-    .from(dbTables.fiscalEvents)
-    .select("id, source_event_id, metadata")
-    .eq("expediente_id", input.expediente.id);
-
-  if (isMissingCanonicalRuntimeRelation(existingEventsResult.error)) {
-    return;
-  }
-
-  if (existingEventsResult.error) {
-    throw new Error(`No se pudieron cargar eventos fiscales canónicos previos: ${existingEventsResult.error.message}`);
-  }
-
-  const existingEventMetadataBySourceEventId = new Map(
-    ((existingEventsResult.data ?? []) as Array<{
-      id: string;
-      source_event_id: string;
-      metadata: JsonObject | null;
-    }>).map((row) => [row.source_event_id, row.metadata ?? {}])
-  );
-
-  if (!input.expediente.client_id) {
-    for (const eventRow of existingEventsResult.data ?? []) {
-      const { error: deleteEventError } = await supabase
-        .from(dbTables.fiscalEvents)
-        .delete()
-        .eq("id", String(eventRow.id));
-
-      if (deleteEventError) {
-        throw new Error(`No se pudieron limpiar eventos canónicos sin cliente: ${deleteEventError.message}`);
-      }
-    }
-
-    return;
-  }
-
-  const expedienteMetaById = new Map([
-    [
-      input.expediente.id,
-      {
-        reference: input.expediente.reference,
-        fiscal_year: input.expediente.fiscal_year,
-        model_type: input.expediente.model_type
-      }
-    ]
-  ]);
-
-  const canonicalExpedienteView = deriveCanonicalAssetViews({
-    operations: input.operations.map((operation) => ({
-      id: operation.id,
-      expediente_id: operation.expediente_id,
-      operation_type: operation.operation_type,
-      operation_date: operation.operation_date,
-      isin: operation.isin,
-      description: operation.description ?? operation.manual_notes ?? null,
-      amount: toPositiveAmount(operation.amount),
-      currency: normalizeCurrency(operation.currency),
-      quantity: toNumber(operation.quantity),
-      retention: toPositiveAmount(operation.retention),
-      realized_gain: toNumber(operation.realized_gain),
-      source: operation.source
-    })),
-    lots: input.runtime.lots.map((lot) => ({
-      id: lot.id,
-      expediente_id: lot.expediente_id,
-      isin: lot.isin,
-      description: lot.description,
-      quantity_open: lot.quantity_open,
-      total_cost: lot.total_cost,
-      currency: lot.currency,
-      status: lot.status
-    })),
-    saleSummaries: input.runtime.saleSummaries,
-    expedienteMetaById
-  });
-
-  const eventRows = canonicalExpedienteView.fiscalEvents.map((event) => ({
-    id: toDeterministicCanonicalFiscalEventId(input.expediente.id, event.event_id),
-    client_id: input.expediente.client_id as string,
-    expediente_id: input.expediente.id,
-    asset_id: toDeterministicCanonicalAssetId(input.expediente.client_id as string, event.asset_key),
-    asset_key: event.asset_key,
-    source_event_id: event.event_id,
-    asset_label: event.asset_label,
-    isin: event.isin,
-    event_kind: event.event_kind,
-    operation_type: event.operation_type,
-    operation_date: event.operation_date,
-    description: event.description,
-    amount: event.amount,
-    currency: event.currency,
-    quantity: event.quantity,
-    retention: event.retention,
-    realized_gain: event.realized_gain,
-    source: event.source,
-    status: event.status,
-    metadata: {
-      ...(existingEventMetadataBySourceEventId.get(event.event_id) ?? {}),
-      expediente_reference: input.expediente.reference,
-      fiscal_year: input.expediente.fiscal_year,
-      model_type: input.expediente.model_type
-    }
-  }));
-
-  if (eventRows.length > 0) {
-    const { error: upsertEventsError } = await supabase
-      .from(dbTables.fiscalEvents)
-      .upsert(eventRows, { onConflict: "expediente_id,source_event_id" });
-
-    if (upsertEventsError) {
-      throw new Error(`No se pudieron persistir eventos fiscales canónicos: ${upsertEventsError.message}`);
-    }
-  }
-
-  const nextEventIds = new Set(eventRows.map((row) => row.id));
-  for (const existingEvent of existingEventsResult.data ?? []) {
-    const currentId = String(existingEvent.id);
-    if (nextEventIds.has(currentId)) {
-      continue;
-    }
-
-    const { error: deleteEventError } = await supabase
-      .from(dbTables.fiscalEvents)
-      .delete()
-      .eq("id", currentId);
-
-    if (deleteEventError) {
-      throw new Error(`No se pudieron limpiar eventos fiscales canónicos obsoletos: ${deleteEventError.message}`);
-    }
-  }
-
-  const { data: clientExpedientes, error: clientExpedientesError } = await supabase
-    .from(dbTables.expedientes)
-    .select("id, reference, fiscal_year, model_type")
-    .eq("client_id", input.expediente.client_id);
-
-  if (clientExpedientesError) {
-    throw new Error(`No se pudieron cargar expedientes del cliente para activos canónicos: ${clientExpedientesError.message}`);
-  }
-
-  const clientExpedienteIds = (clientExpedientes ?? []).map((expediente) => String(expediente.id));
-  const clientExpedienteMetaById = new Map(
-    (clientExpedientes ?? []).map((expediente) => [
-      String(expediente.id),
-      {
-        reference: String(expediente.reference),
-        fiscal_year: Number(expediente.fiscal_year),
-        model_type: String(expediente.model_type)
-      }
-    ])
-  );
-
-  const [clientOperationsResult, clientLotsResult, clientAllocationsResult, existingAssetsResult] = await Promise.all([
-    clientExpedienteIds.length === 0
-      ? Promise.resolve({ data: [] as RuntimeOperationRow[], error: null })
-      : supabase
-          .from(dbTables.operations)
-          .select(
-            "id, expediente_id, operation_type, operation_date, isin, description, quantity, amount, currency, retention, realized_gain, source, manual_notes, created_at"
-          )
-          .in("expediente_id", clientExpedienteIds)
-          .order("operation_date", { ascending: true })
-          .order("created_at", { ascending: true }),
-    clientExpedienteIds.length === 0
-      ? Promise.resolve({ data: [] as PersistedLot[], error: null })
-      : supabase
-          .from(dbTables.lots)
-          .select("id, expediente_id, isin, description, quantity_open, total_cost, currency, status")
-          .in("expediente_id", clientExpedienteIds),
-    clientExpedienteIds.length === 0
-      ? Promise.resolve({ data: [] as PersistedSaleAllocationRow[], error: null })
-      : supabase
-          .from(dbTables.saleAllocations)
-          .select("sale_operation_id, quantity, sale_amount_allocated, total_cost, realized_gain, acquisition_date, acquisition_operation_id, currency")
-          .in("expediente_id", clientExpedienteIds),
-    supabase.from(dbTables.assets).select("id, asset_key, metadata").eq("client_id", input.expediente.client_id)
-  ]);
-
-  if (clientOperationsResult.error || clientLotsResult.error || clientAllocationsResult.error) {
-    throw new Error(
-      `No se pudo recalcular la base canónica de activos: ${
-        clientOperationsResult.error?.message ??
-        clientLotsResult.error?.message ??
-        clientAllocationsResult.error?.message ??
-        "error desconocido"
-      }`
-    );
-  }
-
-  if (existingAssetsResult.error) {
-    if (isMissingCanonicalRuntimeRelation(existingAssetsResult.error)) {
-      return;
-    }
-
-    throw new Error(`No se pudieron cargar activos canónicos previos: ${existingAssetsResult.error.message}`);
-  }
-
-  const existingAssetMetadataByAssetKey = new Map(
-    ((existingAssetsResult.data ?? []) as Array<{
-      id: string;
-      asset_key: string;
-      metadata: JsonObject | null;
-    }>).map((row) => [row.asset_key, row.metadata ?? {}])
-  );
-
-  const clientRuntimeSaleSummaries = summarizeSalesFromOperations({
-    operations: (clientOperationsResult.data ?? []) as RuntimeOperationRow[],
-    allocations: (clientAllocationsResult.data ?? []) as PersistedSaleAllocationRow[]
-  });
-
-  const clientCanonicalView = deriveCanonicalAssetViews({
-    operations: ((clientOperationsResult.data ?? []) as RuntimeOperationRow[]).map((operation) => ({
-      id: operation.id,
-      expediente_id: operation.expediente_id,
-      operation_type: operation.operation_type,
-      operation_date: operation.operation_date,
-      isin: operation.isin,
-      description: operation.description ?? operation.manual_notes ?? null,
-      amount: toPositiveAmount(operation.amount),
-      currency: normalizeCurrency(operation.currency),
-      quantity: toNumber(operation.quantity),
-      retention: toPositiveAmount(operation.retention),
-      realized_gain: toNumber(operation.realized_gain),
-      source: operation.source
-    })),
-    lots: ((clientLotsResult.data ?? []) as Array<{
-      id: string;
-      expediente_id: string;
-      isin: string;
-      description: string | null;
-      quantity_open: number | string;
-      total_cost: number | string | null;
-      currency: string | null;
-      status: "OPEN" | "CLOSED";
-    }>).map((lot) => ({
-      id: lot.id,
-      expediente_id: lot.expediente_id,
-      isin: lot.isin,
-      description: lot.description,
-      quantity_open: toNumber(lot.quantity_open) ?? 0,
-      total_cost: toNumber(lot.total_cost),
-      currency: lot.currency,
-      status: lot.status
-    })),
-    saleSummaries: clientRuntimeSaleSummaries,
-    expedienteMetaById: clientExpedienteMetaById
-  });
-
-  const assetRows = clientCanonicalView.assets.map((asset) => ({
-    id: toDeterministicCanonicalAssetId(input.expediente.client_id as string, asset.asset_key),
-    client_id: input.expediente.client_id as string,
-    asset_key: asset.asset_key,
-    isin: asset.isin,
-    label: asset.label,
-    currencies: asset.currencies,
-    expedientes: asset.expedientes,
-    fiscal_years: asset.fiscal_years,
-    events_total: asset.events_total,
-    dividends: asset.dividends,
-    interests: asset.interests,
-    acquisitions: asset.acquisitions,
-    transmissions: asset.transmissions,
-    retentions: asset.retentions,
-    gains_losses: asset.gains_losses,
-    open_lots: asset.open_lots,
-    closed_lots: asset.closed_lots,
-    quantity_open: asset.quantity_open,
-    open_cost_basis: asset.open_cost_basis,
-    gross_amount_total: asset.gross_amount_total,
-    realized_gain_total: asset.realized_gain_total,
-    pending_transmissions: asset.pending_transmissions,
-    latest_event_date: asset.latest_event_date,
-    last_source: asset.last_source,
-    metadata: existingAssetMetadataByAssetKey.get(asset.asset_key) ?? {}
-  }));
-
-  if (assetRows.length > 0) {
-    const { error: upsertAssetsError } = await supabase
-      .from(dbTables.assets)
-      .upsert(assetRows, { onConflict: "client_id,asset_key" });
-
-    if (upsertAssetsError) {
-      throw new Error(`No se pudieron persistir activos canónicos: ${upsertAssetsError.message}`);
-    }
-  }
-
-  const nextAssetIds = new Set(assetRows.map((row) => row.id));
-  for (const existingAsset of existingAssetsResult.data ?? []) {
-    const currentId = String(existingAsset.id);
-    if (nextAssetIds.has(currentId)) {
-      continue;
-    }
-
-    const { error: deleteAssetError } = await supabase.from(dbTables.assets).delete().eq("id", currentId);
-    if (deleteAssetError) {
-      throw new Error(`No se pudieron limpiar activos canónicos obsoletos: ${deleteAssetError.message}`);
-    }
-  }
-}
-
 export async function rebuildExpedienteFiscalRuntime(
   supabase: SupabaseClient,
   expedienteId: string
 ): Promise<void> {
-  const [operationsResult, expedienteResult] = await Promise.all([
+  const [operationsResult, adjustmentsResult] = await Promise.all([
     supabase
       .from(dbTables.operations)
       .select(
-        "id, expediente_id, operation_type, operation_date, isin, description, quantity, amount, currency, retention, realized_gain, source, manual_notes, created_at"
+        "id, expediente_id, operation_type, operation_date, isin, description, quantity, amount, currency, realized_gain, source, manual_notes, created_at"
       )
       .eq("expediente_id", expedienteId)
       .order("operation_date", { ascending: true })
       .order("created_at", { ascending: true }),
     supabase
-      .from(dbTables.expedientes)
-      .select("id, client_id, reference, fiscal_year, model_type")
-      .eq("id", expedienteId)
-      .maybeSingle()
+      .from(dbTables.fiscalAdjustments)
+      .select(
+        "id, expediente_id, adjustment_type, status, target_operation_id, operation_date, isin, description, quantity, total_amount, currency, notes, metadata, created_by, updated_by, created_at, updated_at"
+      )
+      .eq("expediente_id", expedienteId)
+      .order("operation_date", { ascending: true })
+      .order("created_at", { ascending: true })
   ]);
 
-  if (operationsResult.error) {
-    throw new Error(`No se pudieron cargar operaciones para recalcular el runtime fiscal: ${operationsResult.error.message}`);
+  if (operationsResult.error || adjustmentsResult.error) {
+    throw new Error(
+      `No se pudieron cargar datos para recalcular el runtime fiscal: ${
+        operationsResult.error?.message ?? adjustmentsResult.error?.message ?? "error desconocido"
+      }`
+    );
   }
 
-  if (expedienteResult.error) {
-    throw new Error(`No se pudo cargar el expediente para recalcular el runtime fiscal: ${expedienteResult.error.message}`);
-  }
-
-  const operations = (operationsResult.data ?? []) as RuntimeOperationRow[];
   const runtime = deriveFiscalRuntimeFromOperations({
     expedienteId,
-    operations
+    operations: (operationsResult.data ?? []) as RuntimeOperationRow[],
+    adjustments: (adjustmentsResult.data ?? []) as FiscalAdjustmentRow[]
   });
 
   const { error: deleteAllocationsError } = await supabase
@@ -922,11 +1028,64 @@ export async function rebuildExpedienteFiscalRuntime(
     }
   }
 
-  if (expedienteResult.data) {
-    await syncCanonicalRuntimeCompat(supabase, {
-      expediente: expedienteResult.data as ExpedienteCanonicalMetaRow,
-      operations,
-      runtime
-    });
+  const { error: deleteBlockedLossAlertsError } = await supabase
+    .from(dbTables.alerts)
+    .delete()
+    .eq("expediente_id", expedienteId)
+    .in("category", ["fiscal.blocked_loss", "fiscal.adjustment"])
+    .eq("status", "open");
+
+  if (deleteBlockedLossAlertsError) {
+    throw new Error(
+      `No se pudieron limpiar alertas de pérdidas bloqueadas: ${deleteBlockedLossAlertsError.message}`
+    );
+  }
+
+  if (runtime.blockedLosses.length > 0) {
+    const { error: insertBlockedLossAlertsError } = await supabase.from(dbTables.alerts).insert(
+      runtime.blockedLosses.map((blockedLoss) => ({
+        id: crypto.randomUUID(),
+        expediente_id: expedienteId,
+        severity: "warning" as const,
+        category: "fiscal.blocked_loss",
+        message: `Venta con pérdida de ${blockedLoss.isin} el ${blockedLoss.sale_date} bloqueada por recompra el ${blockedLoss.blocked_by_buy_date}.`,
+        status: "open" as const,
+        entity_type: "operation",
+        entity_id: blockedLoss.sale_operation_id,
+        metadata: blockedLoss
+      }))
+    );
+
+    if (insertBlockedLossAlertsError) {
+      throw new Error(
+        `No se pudieron persistir alertas de pérdidas bloqueadas: ${insertBlockedLossAlertsError.message}`
+      );
+    }
+  }
+
+  const adjustmentIssues = runtime.issues.filter(
+    (issue) => issue.code.startsWith("adjustment_") || issue.code.startsWith("transfer_out_")
+  );
+
+  if (adjustmentIssues.length > 0) {
+    const { error: insertAdjustmentAlertsError } = await supabase.from(dbTables.alerts).insert(
+      adjustmentIssues.map((issue) => ({
+        id: crypto.randomUUID(),
+        expediente_id: expedienteId,
+        severity: "warning" as const,
+        category: "fiscal.adjustment",
+        message: issue.message,
+        status: "open" as const,
+        entity_type: "adjustment",
+        entity_id: issue.operation_id,
+        metadata: issue
+      }))
+    );
+
+    if (insertAdjustmentAlertsError) {
+      throw new Error(
+        `No se pudieron persistir alertas de ajustes fiscales: ${insertAdjustmentAlertsError.message}`
+      );
+    }
   }
 }

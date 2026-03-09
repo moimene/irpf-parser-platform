@@ -79,19 +79,19 @@ export function TabResumen({ payload, onReload, clientId }: TabResumenProps) {
             <div className="client-meta-grid">
                 <article className="stack-item">
                     <h3>Ficha operativa</h3>
-                    <p className="muted" style={{ margin: 0 }}>
+                    <p className="muted m-0">
                         Estado:{" "}
                         <Badge variant={badgeVariant(client.status)}>
                             {client.status === "active" ? "Activo" : client.status === "inactive" ? "Inactivo" : "Archivado"}
                         </Badge>
                     </p>
-                    <p className="muted" style={{ marginBottom: 0 }}>
+                    <p className="muted mb-0">
                         Última actividad: {formatDateTime(stats.last_activity_at)}
                         <br />
                         Alta del cliente: {formatDateTime(client.created_at)}
                     </p>
                     {client.notes && (
-                        <p className="muted" style={{ marginTop: 8 }}>
+                        <p className="muted mt-2">
                             Notas: {client.notes}
                         </p>
                     )}
@@ -102,7 +102,7 @@ export function TabResumen({ payload, onReload, clientId }: TabResumenProps) {
                         <h3>Unidad fiscal</h3>
                         <Badge variant={badgeVariant(fiscalUnitState.tone)}>{fiscalUnitState.label}</Badge>
                     </div>
-                    <p className="muted" style={{ margin: 0 }}>
+                    <p className="muted m-0">
                         Sujeto pasivo: {formatMaybeValue(client.fiscal_unit.primary_taxpayer_name)} ·{" "}
                         {formatMaybeValue(client.fiscal_unit.primary_taxpayer_nif)}
                         <br />
@@ -120,13 +120,13 @@ export function TabResumen({ payload, onReload, clientId }: TabResumenProps) {
                 <article className="stack-item">
                     <h3>Equipo asignado</h3>
                     {assignments.length === 0 ? (
-                        <p className="muted" style={{ margin: 0 }}>
+                        <p className="muted m-0">
                             No hay usuarios asignados todavía a este cliente.
                         </p>
                     ) : (
-                        <div className="muted" style={{ margin: 0 }}>
+                        <div className="muted m-0">
                             {assignments.map((a) => (
-                                <p key={a.id} style={{ margin: "0 0 8px" }}>
+                                <p key={a.id} className="m-0 mb-2">
                                     <strong>{a.user.display_name}</strong> · {a.assignment_role} · {a.user.role}
                                     <br />
                                     {a.user.email}
@@ -144,7 +144,7 @@ export function TabResumen({ payload, onReload, clientId }: TabResumenProps) {
                     Abre un expediente vinculado a este cliente con modelo y ejercicio.
                 </p>
                 {!canCreateExpediente && (
-                    <p className="badge warning" style={{ marginBottom: 12 }}>
+                    <p className="badge warning mb-3">
                         Solo perfiles con permisos pueden crear expedientes.
                     </p>
                 )}
@@ -193,11 +193,11 @@ export function TabResumen({ payload, onReload, clientId }: TabResumenProps) {
                 </form>
 
                 {createdRef && (
-                    <p className="badge success" style={{ marginTop: 12 }}>
+                    <p className="badge success mt-3">
                         Expediente <Link href={`/expedientes/${createdRef}`}>{createdRef}</Link> creado.
                     </p>
                 )}
-                {error && <p className="badge danger" style={{ marginTop: 12 }}>{error}</p>}
+                {error && <p className="badge danger mt-3">{error}</p>}
             </section>
         </div>
     );
