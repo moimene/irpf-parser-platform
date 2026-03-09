@@ -75,7 +75,7 @@ export function DashboardWorkspace() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <span className="text-xs font-medium uppercase tracking-wider text-text-secondary">Dashboard</span>
-            <h2 className="text-xl font-bold mt-1">Plataforma Fiscal Patrimonial</h2>
+            <h2 className="text-xl font-bold mt-1">Plataforma Fiscal</h2>
             <p className="text-sm text-text-secondary mt-0.5">
               {payload.current_user.display_name || "Fiscalista"} · {payload.current_user.role}
             </p>

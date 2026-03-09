@@ -12,8 +12,8 @@ const montserrat = Montserrat({
 });
 
 export const metadata: Metadata = {
-  title: "Plataforma Fiscal Patrimonial",
-  description: "Gestión por cliente, expediente anual y preparación AEAT para despacho",
+  title: "Plataforma Fiscal",
+  description: "Por Activos IRPF-IP-720, gestor información. Cliente, expediente anual y modelos AEAT",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -26,7 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <aside className="sidebar" aria-label="Navegación principal">
             <div className="sidebar-brand">
               <strong>Plataforma Fiscal</strong>
-              <span>Cliente, expediente anual y modelos AEAT</span>
+              <span>Por Activos IRPF-IP-720, gestor información</span>
             </div>
             <PrimaryNav />
             <div className="sidebar-meta">

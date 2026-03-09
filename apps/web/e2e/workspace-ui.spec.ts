@@ -21,7 +21,7 @@ test.describe("Workspace + Stepper E2E", () => {
         await page.goto("/");
 
         // Dashboard header
-        await expect(page.getByText("Plataforma Fiscal Patrimonial")).toBeVisible();
+        await expect(page.getByText("Plataforma Fiscal")).toBeVisible();
 
         // KPI grid
         const kpis = page.locator(".kpi");

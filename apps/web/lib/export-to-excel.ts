@@ -46,7 +46,7 @@ export async function exportToExcel<TData>(
     ]);
 
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = "Plataforma Fiscal Patrimonial";
+    workbook.creator = "Plataforma Fiscal";
     workbook.created = new Date();
 
     const worksheet = workbook.addWorksheet(sheetName, {
