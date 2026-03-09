@@ -22,6 +22,7 @@ import {
     AlertCircle,
     Clock,
     Eye,
+    RotateCcw,
 } from "lucide-react";
 
 type ClientDocument = ClientPayload["client_documents"][number];
@@ -567,14 +568,48 @@ function ConfidenceBar({ value }: { value: number }) {
 function DocumentDetailPanel({
     doc,
     onClose,
+    onReparse,
 }: {
     doc: ClientDocument;
     onClose: () => void;
+    onReparse?: () => void;
 }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [detail, setDetail] = useState<ExtractionDetail | null>(null);
     const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
+    const [reparsing, setReparsing] = useState(false);
+    const [reparseMsg, setReparseMsg] = useState<string | null>(null);
+
+    async function handleReparse() {
+        setReparsing(true);
+        setReparseMsg(null);
+        setError(null);
+        try {
+            const res = await fetch("/api/documents/reparse", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ document_id: doc.id }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(
+                    (data as { error?: string }).error ?? "Error al reparsear"
+                );
+            }
+            setReparseMsg(
+                (data as { message?: string }).message ?? "Reparseo completado"
+            );
+            // Refresh parent data after short delay
+            setTimeout(() => onReparse?.(), 800);
+        } catch (err) {
+            setError(
+                err instanceof Error ? err.message : "Error al reparsear"
+            );
+        } finally {
+            setReparsing(false);
+        }
+    }
 
     useEffect(() => {
         if (!doc.extraction?.id) {
@@ -624,12 +659,26 @@ function DocumentDetailPanel({
                         </span>
                     </div>
                 </div>
-                <button
-                    onClick={onClose}
-                    className="text-xs text-text-secondary hover:text-text-primary transition-colors px-2 py-0.5"
-                >
-                    ✕ Cerrar
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleReparse}
+                        disabled={reparsing}
+                        className="flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary transition-colors px-2 py-0.5 disabled:opacity-50"
+                    >
+                        {reparsing ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                            <RotateCcw className="h-3 w-3" />
+                        )}
+                        {reparsing ? "Parseando…" : "Reparsear"}
+                    </button>
+                    <button
+                        onClick={onClose}
+                        className="text-xs text-text-secondary hover:text-text-primary transition-colors px-2 py-0.5"
+                    >
+                        ✕ Cerrar
+                    </button>
+                </div>
             </div>
 
             {/* Content */}
@@ -644,6 +693,12 @@ function DocumentDetailPanel({
                 {error && (
                     <p className="text-xs text-red-600 flex items-center gap-1">
                         <AlertCircle className="h-3 w-3" /> {error}
+                    </p>
+                )}
+
+                {reparseMsg && (
+                    <p className="text-xs text-green-600 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" /> {reparseMsg}
                     </p>
                 )}
 
@@ -926,6 +981,11 @@ export function TabDocumentos({ payload, onRefresh }: TabDocumentosProps) {
                     key={selectedDoc.id}
                     doc={selectedDoc}
                     onClose={() => setSelectedDoc(null)}
+                    onReparse={() => {
+                        setSelectedDoc(null);
+                        onRefresh?.();
+                        router.refresh();
+                    }}
                 />
             )}
 

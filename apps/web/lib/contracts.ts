@@ -11,6 +11,8 @@ export type WorkflowEventType =
   | "parse.started"
   | "parse.completed"
   | "parse.failed"
+  | "reparse.completed"
+  | "reparse.failed"
   | "manual.review.required";
 
 export type DocumentSourceType = "PDF" | "IMAGE" | "CSV" | "XLSX" | "DOCX";
@@ -50,22 +52,22 @@ export interface SourceSpan {
 
 export interface ParsedRecord {
   record_type:
-    | "CUENTA"
-    | "VALOR"
-    | "IIC"
-    | "SEGURO"
-    | "INMUEBLE"
-    | "BIEN_MUEBLE"
-    | "DIVIDENDO"
-    | "INTERES"
-    | "RENTA"
-    | "RETENCION"
-    | "COMPRA"
-    | "VENTA"
-    | "POSICION"
-    | "CUENTA_BANCARIA"
-    | "MOVIMIENTO"
-    | "DESCONOCIDO";
+  | "CUENTA"
+  | "VALOR"
+  | "IIC"
+  | "SEGURO"
+  | "INMUEBLE"
+  | "BIEN_MUEBLE"
+  | "DIVIDENDO"
+  | "INTERES"
+  | "RENTA"
+  | "RETENCION"
+  | "COMPRA"
+  | "VENTA"
+  | "POSICION"
+  | "CUENTA_BANCARIA"
+  | "MOVIMIENTO"
+  | "DESCONOCIDO";
   fields: Record<string, string | number | boolean | null>;
   confidence: number;
   source_spans: SourceSpan[];
@@ -77,12 +79,12 @@ export interface CanonicalAssetRecord {
   declaration_profile_id?: string | null;
   client_id?: string | null;
   asset_class:
-    | "ACCOUNT"
-    | "SECURITY"
-    | "COLLECTIVE_INVESTMENT"
-    | "INSURANCE"
-    | "REAL_ESTATE"
-    | "MOVABLE_ASSET";
+  | "ACCOUNT"
+  | "SECURITY"
+  | "COLLECTIVE_INVESTMENT"
+  | "INSURANCE"
+  | "REAL_ESTATE"
+  | "MOVABLE_ASSET";
   condition_key: "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8";
   asset_key: "C" | "V" | "I" | "S" | "B" | "M";
   asset_subkey: string;
@@ -142,20 +144,20 @@ export interface CanonicalAssetRecord {
   } | null;
   movable?: {
     movable_kind?:
-      | "GENERAL"
-      | "ART"
-      | "JEWELRY"
-      | "VEHICLE"
-      | "BOAT"
-      | "AIRCRAFT"
-      | "COLLECTION"
-      | "ADMINISTRATIVE_CONCESSION"
-      | "CONTRACT_OPTION"
-      | "INTELLECTUAL_PROPERTY"
-      | "REGISTERED_MOVABLE"
-      | "LOCATED_MOVABLE"
-      | "OTHER"
-      | null;
+    | "GENERAL"
+    | "ART"
+    | "JEWELRY"
+    | "VEHICLE"
+    | "BOAT"
+    | "AIRCRAFT"
+    | "COLLECTION"
+    | "ADMINISTRATIVE_CONCESSION"
+    | "CONTRACT_OPTION"
+    | "INTELLECTUAL_PROPERTY"
+    | "REGISTERED_MOVABLE"
+    | "LOCATED_MOVABLE"
+    | "OTHER"
+    | null;
     registry_reference?: string | null;
     valuation_method?: string | null;
   } | null;
@@ -165,37 +167,37 @@ export interface CanonicalAssetRecord {
 export interface CanonicalFiscalEvent {
   asset_link_key?: string | null;
   event_type:
-    | "ACQUISITION"
-    | "DISPOSAL"
-    | "INTEREST"
-    | "DIVIDEND"
-    | "RENT"
-    | "WITHHOLDING"
-    | "GAIN"
-    | "LOSS"
-    | "ADJUSTMENT";
+  | "ACQUISITION"
+  | "DISPOSAL"
+  | "INTEREST"
+  | "DIVIDEND"
+  | "RENT"
+  | "WITHHOLDING"
+  | "GAIN"
+  | "LOSS"
+  | "ADJUSTMENT";
   event_date: string;
   asset_id?: string | null;
   capital_operation_key?:
-    | "DIVIDENDO_ACCION"
-    | "DIVIDENDO_FONDO"
-    | "INTERES_CUENTA"
-    | "INTERES_BONO"
-    | "CUPON_BONO"
-    | "REND_SEGURO_VIDA"
-    | "RENTA_VITALICIA"
-    | "COMPRA_VALOR"
-    | "VENTA_VALOR"
-    | "COMPRA_FONDO"
-    | "VENTA_FONDO"
-    | "ALQUILER_INMUEBLE"
-    | "COMPRA_INMUEBLE"
-    | "VENTA_INMUEBLE"
-    | "COMPRA_BIEN_MUEBLE"
-    | "VENTA_BIEN_MUEBLE"
-    | "RETENCION_MANUAL"
-    | "OTRO_MOVIMIENTO"
-    | null;
+  | "DIVIDENDO_ACCION"
+  | "DIVIDENDO_FONDO"
+  | "INTERES_CUENTA"
+  | "INTERES_BONO"
+  | "CUPON_BONO"
+  | "REND_SEGURO_VIDA"
+  | "RENTA_VITALICIA"
+  | "COMPRA_VALOR"
+  | "VENTA_VALOR"
+  | "COMPRA_FONDO"
+  | "VENTA_FONDO"
+  | "ALQUILER_INMUEBLE"
+  | "COMPRA_INMUEBLE"
+  | "VENTA_INMUEBLE"
+  | "COMPRA_BIEN_MUEBLE"
+  | "VENTA_BIEN_MUEBLE"
+  | "RETENCION_MANUAL"
+  | "OTRO_MOVIMIENTO"
+  | null;
   irpf_group?: "RCM" | "GYP" | "OTRO" | null;
   irpf_subgroup?: string | null;
   quantity?: number | null;
@@ -277,6 +279,8 @@ export function isWorkflowEventType(value: string): value is WorkflowEventType {
     "parse.started",
     "parse.completed",
     "parse.failed",
+    "reparse.completed",
+    "reparse.failed",
     "manual.review.required"
   ].includes(value);
 }
