@@ -39,8 +39,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="shell">
             <header className="topbar">
               <div>
-                <p className="topbar-title">Despacho fiscal-patrimonial</p>
-                <p className="topbar-subtitle">Gestión operativa por cliente, ejercicio y preparación AEAT</p>
+                <p className="topbar-title">Plataforma Fiscal</p>
+                <p className="topbar-subtitle">Cliente, expediente anual y modelos AEAT · Por Activos IRPF-IP-720</p>
               </div>
               <div className="topbar-actions">
                 <SessionSwitcher />
