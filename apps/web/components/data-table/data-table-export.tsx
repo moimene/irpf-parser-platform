@@ -23,8 +23,8 @@ export function DataTableExport<TData>({
     };
 
     return (
-        <Button variant="outline" size="sm" onClick={handleExport} className="h-8">
-            <Download className="mr-2 h-4 w-4" />
+        <Button variant="ghost" size="sm" onClick={handleExport} className="h-7 px-2 text-xs text-text-secondary hover:text-text-primary">
+            <Download className="mr-1.5 h-3.5 w-3.5" />
             Exportar XLS
         </Button>
     );

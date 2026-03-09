@@ -1,16 +1,8 @@
 "use client";
 
 import { Column } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown, EyeOff } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 interface DataTableColumnHeaderProps<TData, TValue>
     extends React.HTMLAttributes<HTMLDivElement> {
@@ -28,40 +20,22 @@ export function DataTableColumnHeader<TData, TValue>({
     }
 
     return (
-        <div className={cn("flex items-center space-x-2", className)}>
-            <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="-ml-3 h-8 data-[state=open]:bg-surface-subtle"
-                    >
-                        <span>{title}</span>
-                        {column.getIsSorted() === "desc" ? (
-                            <ArrowDown className="ml-2 h-4 w-4" />
-                        ) : column.getIsSorted() === "asc" ? (
-                            <ArrowUp className="ml-2 h-4 w-4" />
-                        ) : (
-                            <ArrowUpDown className="ml-2 h-4 w-4" />
-                        )}
-                    </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                    <DropdownMenuItem onClick={() => column.toggleSorting(false)}>
-                        <ArrowUp className="mr-2 h-3.5 w-3.5 text-text-secondary/70" />
-                        Ascendente
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => column.toggleSorting(true)}>
-                        <ArrowDown className="mr-2 h-3.5 w-3.5 text-text-secondary/70" />
-                        Descendente
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => column.toggleVisibility(false)}>
-                        <EyeOff className="mr-2 h-3.5 w-3.5 text-text-secondary/70" />
-                        Ocultar
-                    </DropdownMenuItem>
-                </DropdownMenuContent>
-            </DropdownMenu>
-        </div>
+        <button
+            type="button"
+            className={cn(
+                "inline-flex items-center gap-1 text-xs font-semibold text-text-secondary hover:text-text-primary transition-colors -ml-1 px-1 py-0.5 rounded",
+                className
+            )}
+            onClick={() => column.toggleSorting()}
+        >
+            <span>{title}</span>
+            {column.getIsSorted() === "desc" ? (
+                <ArrowDown className="h-3 w-3 text-text-secondary/70" />
+            ) : column.getIsSorted() === "asc" ? (
+                <ArrowUp className="h-3 w-3 text-text-secondary/70" />
+            ) : (
+                <ChevronsUpDown className="h-3 w-3 text-text-secondary/40" />
+            )}
+        </button>
     );
 }
