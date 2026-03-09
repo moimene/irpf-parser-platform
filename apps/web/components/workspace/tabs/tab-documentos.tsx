@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ColumnDef } from "@tanstack/react-table";
 import { DataTable, DataTableColumnHeader } from "@/components/data-table";
@@ -516,6 +516,387 @@ function UploadZone({
     );
 }
 
+/* ── extraction detail types ─────────────────────────────────────── */
+
+type ExtractionRecord = {
+    record_index: number;
+    record_type: string;
+    confidence: number;
+    fields: Record<string, string | number | boolean | null>;
+    source_spans: Array<{ page: number; start: number; end: number; snippet?: string }>;
+};
+
+type ExtractionDetail = {
+    extraction: {
+        id: string;
+        confidence: number;
+        review_status: string;
+        created_at: string;
+    };
+    document: {
+        filename: string;
+        processing_status: string;
+        processed_at: string | null;
+    };
+    records: ExtractionRecord[];
+};
+
+/* ── document detail panel ──────────────────────────────────────── */
+
+function ConfidenceBar({ value }: { value: number }) {
+    const pct = Math.round(value * 100);
+    const color =
+        pct >= 80
+            ? "bg-green-500"
+            : pct >= 60
+                ? "bg-amber-500"
+                : "bg-red-500";
+    return (
+        <div className="flex items-center gap-2">
+            <div className="flex-1 h-1.5 bg-border-default rounded-full overflow-hidden">
+                <div
+                    className={`h-full rounded-full transition-all ${color}`}
+                    style={{ width: `${pct}%` }}
+                />
+            </div>
+            <span className="text-xs font-mono tabular-nums">{pct}%</span>
+        </div>
+    );
+}
+
+function DocumentDetailPanel({
+    doc,
+    onClose,
+}: {
+    doc: ClientDocument;
+    onClose: () => void;
+}) {
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [detail, setDetail] = useState<ExtractionDetail | null>(null);
+    const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (!doc.extraction?.id) {
+            setLoading(false);
+            return;
+        }
+
+        fetch(`/api/review/${doc.extraction.id}`)
+            .then(async (res) => {
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    throw new Error(
+                        (body as { error?: string }).error ??
+                        "No se pudo cargar el detalle"
+                    );
+                }
+                return res.json();
+            })
+            .then((data) => {
+                setDetail(data as ExtractionDetail);
+                setLoading(false);
+            })
+            .catch((err) => {
+                setError(
+                    err instanceof Error
+                        ? err.message
+                        : "Error cargando detalle"
+                );
+                setLoading(false);
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [doc.extraction?.id]);
+
+    return (
+        <div className="rounded-md border border-border-default bg-surface-card mb-4 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-2 bg-surface-subtle/20 border-b border-border-default">
+                <div className="flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-text-secondary" />
+                    <span className="text-sm font-medium">
+                        {doc.filename}
+                    </span>
+                    <div className="flex items-center gap-1">
+                        {parseStatusIcon(doc.processing_status)}
+                        <span className="text-xs text-text-secondary">
+                            {parseStatusLabel(doc.processing_status)}
+                        </span>
+                    </div>
+                </div>
+                <button
+                    onClick={onClose}
+                    className="text-xs text-text-secondary hover:text-text-primary transition-colors px-2 py-0.5"
+                >
+                    ✕ Cerrar
+                </button>
+            </div>
+
+            {/* Content */}
+            <div className="px-3 py-3">
+                {loading && (
+                    <div className="flex items-center gap-2 text-xs text-text-secondary py-4 justify-center">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Cargando detalle de extracción…
+                    </div>
+                )}
+
+                {error && (
+                    <p className="text-xs text-red-600 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" /> {error}
+                    </p>
+                )}
+
+                {!loading && !error && !doc.extraction && (
+                    <div className="text-center py-4">
+                        <Clock className="h-5 w-5 text-text-secondary mx-auto mb-1" />
+                        <p className="text-xs text-text-secondary">
+                            Este documento aún no ha sido procesado.
+                            El parseo se ejecuta de forma asíncrona tras
+                            la subida.
+                        </p>
+                    </div>
+                )}
+
+                {!loading && !error && detail && (
+                    <div className="space-y-3">
+                        {/* Summary grid */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div>
+                                <p className="text-[10px] uppercase tracking-wide text-text-secondary">
+                                    Confianza
+                                </p>
+                                <ConfidenceBar
+                                    value={
+                                        detail.extraction.confidence
+                                    }
+                                />
+                            </div>
+                            <div>
+                                <p className="text-[10px] uppercase tracking-wide text-text-secondary">
+                                    Revisión
+                                </p>
+                                <span className="text-sm">
+                                    {reviewStatusLabel(
+                                        detail.extraction
+                                            .review_status
+                                    )}
+                                </span>
+                            </div>
+                            <div>
+                                <p className="text-[10px] uppercase tracking-wide text-text-secondary">
+                                    Records
+                                </p>
+                                <span className="text-sm font-medium">
+                                    {detail.records.length}
+                                </span>
+                            </div>
+                            <div>
+                                <p className="text-[10px] uppercase tracking-wide text-text-secondary">
+                                    Procesado
+                                </p>
+                                <span className="text-xs">
+                                    {detail.document.processed_at
+                                        ? formatDate(
+                                            detail.document
+                                                .processed_at
+                                        )
+                                        : "En curso"}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Records list */}
+                        {detail.records.length > 0 && (
+                            <div>
+                                <p className="text-[10px] uppercase tracking-wide text-text-secondary mb-1">
+                                    Registros extraídos
+                                </p>
+                                <div className="space-y-1">
+                                    {detail.records.map((rec) => (
+                                        <div
+                                            key={rec.record_index}
+                                            className="border border-border-default rounded-md"
+                                        >
+                                            <button
+                                                onClick={() =>
+                                                    setExpandedRecord(
+                                                        expandedRecord ===
+                                                            rec.record_index
+                                                            ? null
+                                                            : rec.record_index
+                                                    )
+                                                }
+                                                className="flex items-center justify-between w-full px-2 py-1.5 text-xs hover:bg-surface-subtle/20 transition-colors"
+                                            >
+                                                <span className="flex items-center gap-1.5">
+                                                    <Badge
+                                                        variant={
+                                                            rec.confidence >=
+                                                                0.8
+                                                                ? "success"
+                                                                : rec.confidence >=
+                                                                    0.6
+                                                                    ? "warning"
+                                                                    : "destructive"
+                                                        }
+                                                    >
+                                                        {
+                                                            rec.record_type
+                                                        }
+                                                    </Badge>
+                                                    <span className="text-text-secondary">
+                                                        {
+                                                            Object.keys(
+                                                                rec.fields
+                                                            )
+                                                                .length
+                                                        }{" "}
+                                                        campos
+                                                    </span>
+                                                    <span className="text-text-secondary">
+                                                        ·{" "}
+                                                        {(
+                                                            rec.confidence *
+                                                            100
+                                                        ).toFixed(
+                                                            0
+                                                        )}
+                                                        %
+                                                    </span>
+                                                </span>
+                                                {expandedRecord ===
+                                                    rec.record_index ? (
+                                                    <ChevronUp className="h-3 w-3" />
+                                                ) : (
+                                                    <ChevronDown className="h-3 w-3" />
+                                                )}
+                                            </button>
+
+                                            {expandedRecord ===
+                                                rec.record_index && (
+                                                    <div className="border-t border-border-default px-2 py-2">
+                                                        {/* Fields table */}
+                                                        <table className="w-full text-xs">
+                                                            <thead>
+                                                                <tr className="text-left">
+                                                                    <th className="pr-2 py-0.5 text-text-secondary font-medium">
+                                                                        Campo
+                                                                    </th>
+                                                                    <th className="py-0.5 text-text-secondary font-medium">
+                                                                        Valor
+                                                                    </th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {Object.entries(
+                                                                    rec.fields
+                                                                ).map(
+                                                                    ([
+                                                                        key,
+                                                                        val,
+                                                                    ]) => (
+                                                                        <tr
+                                                                            key={
+                                                                                key
+                                                                            }
+                                                                            className="border-t border-border-default/50"
+                                                                        >
+                                                                            <td className="pr-2 py-0.5 text-text-secondary font-mono">
+                                                                                {
+                                                                                    key
+                                                                                }
+                                                                            </td>
+                                                                            <td className="py-0.5">
+                                                                                {String(
+                                                                                    val ??
+                                                                                    "—"
+                                                                                )}
+                                                                            </td>
+                                                                        </tr>
+                                                                    )
+                                                                )}
+                                                            </tbody>
+                                                        </table>
+
+                                                        {/* Source spans */}
+                                                        {rec.source_spans
+                                                            .length >
+                                                            0 && (
+                                                                <div className="mt-2">
+                                                                    <p className="text-[10px] text-text-secondary mb-0.5">
+                                                                        Origen
+                                                                        en
+                                                                        documento
+                                                                    </p>
+                                                                    {rec.source_spans.map(
+                                                                        (
+                                                                            span,
+                                                                            i
+                                                                        ) => (
+                                                                            <p
+                                                                                key={
+                                                                                    i
+                                                                                }
+                                                                                className="text-[10px] text-text-secondary"
+                                                                            >
+                                                                                Pág.
+                                                                                {
+                                                                                    span.page
+                                                                                }
+                                                                                ,
+                                                                                pos.
+                                                                                {
+                                                                                    span.start
+                                                                                }
+                                                                                –
+                                                                                {
+                                                                                    span.end
+                                                                                }
+                                                                                {span.snippet && (
+                                                                                    <span className="italic ml-1">
+                                                                                        {'"'}
+                                                                                        {
+                                                                                            span
+                                                                                                .snippet
+                                                                                                .length >
+                                                                                                60
+                                                                                                ? span.snippet.slice(
+                                                                                                    0,
+                                                                                                    60
+                                                                                                ) +
+                                                                                                "…"
+                                                                                                : span.snippet
+                                                                                        }
+                                                                                        {'"'}
+                                                                                    </span>
+                                                                                )}
+                                                                            </p>
+                                                                        )
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                    </div>
+                                                )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {detail.records.length === 0 && (
+                            <p className="text-xs text-text-secondary text-center py-2">
+                                La extracción no produjo registros
+                                estructurados.
+                            </p>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 /* ── tab component ──────────────────────────────────────────────── */
 
 interface TabDocumentosProps {
@@ -525,6 +906,9 @@ interface TabDocumentosProps {
 
 export function TabDocumentos({ payload, onRefresh }: TabDocumentosProps) {
     const router = useRouter();
+    const [selectedDoc, setSelectedDoc] = useState<ClientDocument | null>(
+        null
+    );
 
     return (
         <div>
@@ -535,6 +919,16 @@ export function TabDocumentos({ payload, onRefresh }: TabDocumentosProps) {
                     router.refresh();
                 }}
             />
+
+            {/* Detail panel if document selected */}
+            {selectedDoc && (
+                <DocumentDetailPanel
+                    key={selectedDoc.id}
+                    doc={selectedDoc}
+                    onClose={() => setSelectedDoc(null)}
+                />
+            )}
+
             <DataTable
                 columns={columns}
                 data={payload.client_documents}
@@ -543,6 +937,12 @@ export function TabDocumentos({ payload, onRefresh }: TabDocumentosProps) {
                 exportSheetName="Documentos"
                 emptyMessage="Todavía no hay documentos para este cliente."
                 pageSize={25}
+                onRowClick={(row) => {
+                    const doc = row as ClientDocument;
+                    setSelectedDoc(
+                        selectedDoc?.id === doc.id ? null : doc
+                    );
+                }}
             />
         </div>
     );
