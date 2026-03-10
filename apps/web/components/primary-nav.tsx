@@ -8,6 +8,7 @@ const navigationItems = [
   { href: "/clientes", label: "Clientes" },
   { href: "/review", label: "Bandeja de trabajo" },
   { href: "/modelos", label: "Modelos AEAT" },
+  { href: "/extractor", label: "Extractor" },
   { href: "/configuracion", label: "Configuración" }
 ] as const;
 
