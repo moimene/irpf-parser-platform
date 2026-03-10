@@ -129,7 +129,7 @@ ISIN/Identificador, Pais, Titularidad, Porcentaje, Valor fin ejercicio,
 Saldo medio Q4, Metodo valoracion, Bloque 720, Expedientes vinculados,
 Incidencias abiertas.
 
-3.3 Eje 2: Expediente como Stepper Lineal
+3.xpediente como Stepper Lineal
 
 **Estado actual:** Un componente monolitico de 2.200 lineas con tabs que
 no transmiten progresion. El usuario no sabe si esta en fase documental
@@ -309,7 +309,7 @@ edicion de canonico con aprobacion.
   Sobrecarga de Tailwind en bundle     Aumento tiempo de build                 Purge configurado, componentes bajo demanda
   DataTable lento con muchos activos   Lag en portfolio grandes (500+ filas)   Paginacion servidor, virtualizacion si necesario
   Scope creep en diseno                Sprint 1 se extiende indefinidamente    Fijar wireframes antes de codificar, iterar despues
-  ------------------------------------ --------------------------------------- -----------------------------------------------------------
+  ------------------------------------ --------------------------------------- ----------------------------3 Eje 2: E-------------------------------
 
 6\. Stack Tecnico Propuesto
 
