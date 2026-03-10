@@ -25,8 +25,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="app-frame">
           <aside className="sidebar" aria-label="Navegación principal">
             <div className="sidebar-brand">
-              <strong>Plataforma Fiscal</strong>
-              <span>Por Activos IRPF-IP-720, gestor información</span>
+              <strong>Extractor IRPF</strong>
+              <span>Para activos IRPF-IP-720</span>
             </div>
             <PrimaryNav />
             <div className="sidebar-meta">
@@ -39,7 +39,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="shell">
             <header className="topbar">
               <div>
-                <p className="topbar-title">Plataforma Fiscal</p>
+                <p className="topbar-title">Extractor IRPF</p>
                 <p className="topbar-subtitle">Cliente, expediente anual y modelos AEAT · Por Activos IRPF-IP-720</p>
               </div>
               <div className="topbar-actions">
