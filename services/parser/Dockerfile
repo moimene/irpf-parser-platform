@@ -11,7 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Instalar dependencias Python
+# Instalar PyTorch CPU-only PRIMERO (evita descargar CUDA ~2GB)
+RUN pip install --no-cache-dir \
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Instalar dependencias Python (Docling usará el torch CPU ya instalado)
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
     "fastapi>=0.115.0" \
