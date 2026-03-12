@@ -27,8 +27,19 @@ RUN pip install --no-cache-dir \
     "python-multipart>=0.0.9" \
     "docling>=2.0.0"
 
-# Pre-descargar modelos Docling al build (evita descarga en runtime)
-RUN python -c "from docling.document_converter import DocumentConverter; DocumentConverter()" || true
+# Pre-descargar modelos Docling al build: Layout Heron + TableFormer ACCURATE + OCR
+# Esto evita descargas en runtime (~500MB de modelos)
+RUN python -c "\
+from docling.datamodel.base_models import InputFormat; \
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode; \
+from docling.document_converter import DocumentConverter, PdfFormatOption; \
+opts = PdfPipelineOptions(); \
+opts.do_table_structure = True; \
+opts.table_structure_options.mode = TableFormerMode.ACCURATE; \
+opts.table_structure_options.do_cell_matching = True; \
+opts.do_ocr = True; \
+DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}); \
+print('Docling models pre-downloaded: Layout Heron + TableFormer ACCURATE + EasyOCR')" || true
 
 # Copiar código fuente
 COPY app/ ./app/

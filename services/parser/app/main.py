@@ -18,7 +18,7 @@ from app.docling_converter import (
 
 app = FastAPI(
     title="IRPF Parser Service",
-    version="0.4.0",
+    version="0.5.0",
     description="Parser adaptativo con Docling para documentos bancarios IRPF/IP/720",
 )
 
@@ -62,11 +62,17 @@ def health() -> dict:
     return {
         "ok": True,
         "service": "irpf-parser",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "capabilities": {
             "pdfplumber": has_pdfplumber,
             "docling": has_docling,
             "docling_enabled": use_docling and has_docling,
+            "docling_pipeline": {
+                "layout": "Layout Heron (RT-DETR)",
+                "table_structure": "TableFormer ACCURATE + cell matching",
+                "ocr": "EasyOCR (es, en)",
+                "primary_backend": "docling" if (use_docling and has_docling) else "pdfplumber",
+            } if (use_docling and has_docling) else None,
             "structured_document": True,
             "csv": True,
             "xlsx": has_openpyxl,

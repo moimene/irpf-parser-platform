@@ -85,11 +85,13 @@ def _convert_with_docling(content_bytes: bytes, filename: str) -> Tuple[str, int
 
     warnings: List[str] = []
 
-    # Configurar pipeline con tabla-aware + OCR
+    # Configurar pipeline: Layout Heron + TableFormer ACCURATE + OCR bilingüe
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_table_structure = True
     pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
+    pipeline_options.table_structure_options.do_cell_matching = True
     pipeline_options.do_ocr = True
+    pipeline_options.ocr_options.lang = ["es", "en"]
 
     converter = DocumentConverter(
         format_options={
@@ -231,8 +233,156 @@ def build_docling_structured_document(
     """
     Construye un StructuredDocument usando Docling como backend.
 
-    Convierte a Markdown y luego parsea las tablas detectadas
-    para poblar la estructura compatible con el parser existente.
+    Usa la estructura nativa de DoclingDocument para extraer tablas
+    con headers y rows correctamente separados (sin parsear markdown).
+
+    Pipeline: Layout Heron (RT-DETR) + TableFormer ACCURATE + OCR bilingüe.
+    """
+    if not USE_DOCLING:
+        # Fallback a método legacy basado en markdown
+        return _build_docling_structured_document_legacy(content_bytes, filename)
+
+    warnings: List[str] = []
+
+    try:
+        from docling.datamodel.base_models import (
+            ConversionStatus,
+            DocumentStream,
+            InputFormat,
+        )
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        # Pipeline: Layout Heron + TableFormer ACCURATE + OCR es/en
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_table_structure = True
+        pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
+        pipeline_options.table_structure_options.do_cell_matching = True
+        pipeline_options.do_ocr = True
+        pipeline_options.ocr_options.lang = ["es", "en"]
+
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+            }
+        )
+
+        source = DocumentStream(name=filename, stream=BytesIO(content_bytes))
+        result = converter.convert(source)
+
+        if result.status == ConversionStatus.FAILURE:
+            error_msgs = [e.error_message for e in (result.errors or [])]
+            raise RuntimeError(f"Docling failed: {'; '.join(error_msgs)}")
+
+        if result.status == ConversionStatus.PARTIAL_SUCCESS:
+            for error in (result.errors or []):
+                warnings.append(f"Docling partial: {error.error_message}")
+
+        doc = result.document
+
+        # --- Extract page texts ---
+        # Use markdown export and split by page separator
+        markdown = doc.export_to_markdown()
+        page_texts = markdown.split("\n---\n") if "\n---\n" in markdown else [markdown]
+
+        # --- Extract native tables with proper structure ---
+        # Group tables by page number
+        tables_by_page: Dict[int, List[StructuredTable]] = {}
+        table_counter = 0
+
+        for table_item in (doc.tables if hasattr(doc, "tables") else []):
+            table_counter += 1
+            page_num = 1  # default
+
+            # Try to get page number from table provenance
+            if hasattr(table_item, "prov") and table_item.prov:
+                for prov in table_item.prov:
+                    if hasattr(prov, "page_no"):
+                        page_num = prov.page_no
+                        break
+
+            # Extract table data from the TableItem
+            header_row: List[Optional[str]] = []
+            body_rows: List[List[Optional[str]]] = []
+
+            try:
+                # Use export_to_dataframe for clean tabular data
+                df = table_item.export_to_dataframe()
+                header_row = [str(col) if col is not None else None for col in df.columns.tolist()]
+                for _, row in df.iterrows():
+                    body_rows.append([
+                        str(val).strip() if val is not None and str(val).strip() != "" else None
+                        for val in row.tolist()
+                    ])
+            except Exception:
+                # Fallback: try to get from table grid
+                try:
+                    grid = table_item.export_to_dict()
+                    if isinstance(grid, dict) and "data" in grid:
+                        data = grid["data"]
+                        if isinstance(data, list) and len(data) > 0:
+                            header_row = [str(c) if c else None for c in data[0]]
+                            body_rows = [
+                                [str(c) if c else None for c in row]
+                                for row in data[1:]
+                            ]
+                except Exception:
+                    pass
+
+            if header_row or body_rows:
+                st = StructuredTable(
+                    table_id=f"docling-{page_num}-{table_counter}",
+                    page=page_num,
+                    source=f"docling:page-{page_num}",
+                    header=header_row,
+                    rows=body_rows,
+                )
+                tables_by_page.setdefault(page_num, []).append(st)
+
+        # --- Build StructuredPages ---
+        pages: List[StructuredPage] = []
+        num_pages = max(len(page_texts), max(tables_by_page.keys(), default=0))
+
+        for idx in range(1, num_pages + 1):
+            page_text = page_texts[idx - 1] if idx - 1 < len(page_texts) else ""
+            page_tables = tables_by_page.get(idx, [])
+            pages.append(
+                StructuredPage(
+                    page=idx,
+                    text=page_text,
+                    tables=page_tables,
+                )
+            )
+
+        total_tables = sum(len(t) for t in tables_by_page.values())
+
+        return (
+            StructuredDocument(
+                source_type="PDF",
+                backend="docling",
+                pages=pages,
+                metadata={
+                    "page_count": len(pages),
+                    "tables_count": total_tables,
+                    "docling_backend": "docling",
+                    "docling_pipeline": "layout_heron+tableformer_accurate+ocr_es_en",
+                },
+            ),
+            warnings,
+        )
+
+    except Exception as exc:
+        logger.warning("Docling native extraction failed, using legacy method: %s", exc)
+        warnings.append(f"Docling nativo falló ({exc}), usando método legacy.")
+        return _build_docling_structured_document_legacy(content_bytes, filename)
+
+
+def _build_docling_structured_document_legacy(
+    content_bytes: bytes, filename: str
+) -> Tuple[StructuredDocument, List[str]]:
+    """
+    Fallback: construye StructuredDocument via markdown parsing
+    (método original, menos preciso para tablas).
     """
     markdown, tables_count, pages_count, backend, warnings = convert_document(
         content_bytes, filename
@@ -249,14 +399,11 @@ def build_docling_structured_document(
             warnings,
         )
 
-    # Dividir por páginas (Docling separa con ---)
     page_texts = markdown.split("\n---\n") if "\n---\n" in markdown else [markdown]
 
     pages: List[StructuredPage] = []
     for idx, page_text in enumerate(page_texts, start=1):
-        # Extraer tablas en formato Markdown del texto
         structured_tables = _extract_markdown_tables(page_text, idx)
-
         pages.append(
             StructuredPage(
                 page=idx,

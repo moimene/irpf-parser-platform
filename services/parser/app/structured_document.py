@@ -312,6 +312,26 @@ def _build_pdf_document(
             warnings,
         )
 
+    # --- Primary: Docling (Layout Heron + TableFormer ACCURATE + OCR es/en) ---
+    import os
+    use_docling = os.environ.get("USE_DOCLING", "true").lower() in ("1", "true", "yes")
+
+    if use_docling:
+        try:
+            from app.docling_converter import build_docling_structured_document
+
+            docling_doc, docling_warnings = build_docling_structured_document(
+                content_bytes, request.filename
+            )
+            if docling_doc.pages:
+                warnings.extend(docling_warnings)
+                return docling_doc, warnings
+            else:
+                warnings.append("Docling devolvió documento vacío; usando pdfplumber como fallback.")
+        except Exception as exc:
+            warnings.append(f"Docling falló ({exc}); usando pdfplumber como fallback.")
+
+    # --- Fallback: pdfplumber ---
     pages_text, has_text = extract_text_from_pdf(content_bytes)
     pages: List[StructuredPage] = []
     backend = "text"
