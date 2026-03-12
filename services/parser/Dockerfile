@@ -32,9 +32,21 @@ RUN pip install --no-cache-dir \
     "python-multipart>=0.0.9" \
     "docling>=2.0.0"
 
-# NO pre-descargamos modelos Docling en el build para aligerar la imagen.
-# Los modelos (~500MB) se descargan automáticamente en el primer request.
-# Railway mantiene el container vivo, así que solo se descargan una vez.
+# Pre-descargar modelos Docling durante el build (~500MB).
+# Elimina cold starts de 2-3 min en el primer request.
+# Los modelos se cachean en /root/.cache/huggingface.
+ENV HF_HOME=/root/.cache/huggingface
+RUN python -c "\
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode; \
+from docling.datamodel.base_models import InputFormat; \
+from docling.document_converter import DocumentConverter, PdfFormatOption; \
+opts = PdfPipelineOptions(); \
+opts.do_table_structure = True; \
+opts.table_structure_options.mode = TableFormerMode.ACCURATE; \
+opts.do_ocr = True; \
+DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}); \
+print('Docling models pre-downloaded successfully') \
+"
 
 # Copiar código fuente
 COPY app/ ./app/
@@ -42,8 +54,8 @@ COPY app/ ./app/
 # Puerto expuesto
 EXPOSE 8000
 
-# Health check para Railway (start period alto para descarga de modelos)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+# Health check para Railway (modelos ya pre-descargados en build)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD python3 -c "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('PORT', '8000')}/health\")" || exit 1
 
 # Comando de inicio con 1 worker (Docling consume mucha RAM)

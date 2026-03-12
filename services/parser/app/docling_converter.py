@@ -91,7 +91,7 @@ def _convert_with_docling(content_bytes: bytes, filename: str) -> Tuple[str, int
     pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
     pipeline_options.table_structure_options.do_cell_matching = True
     pipeline_options.do_ocr = True
-    pipeline_options.ocr_options.lang = ["es", "en"]
+    pipeline_options.ocr_options.lang = ["es", "en", "fr", "de", "it"]
 
     converter = DocumentConverter(
         format_options={
@@ -259,7 +259,7 @@ def build_docling_structured_document(
         pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
         pipeline_options.table_structure_options.do_cell_matching = True
         pipeline_options.do_ocr = True
-        pipeline_options.ocr_options.lang = ["es", "en"]
+        pipeline_options.ocr_options.lang = ["es", "en", "fr", "de", "it"]
 
         converter = DocumentConverter(
             format_options={
@@ -365,7 +365,7 @@ def build_docling_structured_document(
                     "page_count": len(pages),
                     "tables_count": total_tables,
                     "docling_backend": "docling",
-                    "docling_pipeline": "layout_heron+tableformer_accurate+ocr_es_en",
+                    "docling_pipeline": "layout_heron+tableformer_accurate+ocr_es_en_fr_de_it",
                 },
             ),
             warnings,

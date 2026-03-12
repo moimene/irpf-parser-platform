@@ -2,10 +2,13 @@
 Utilidades compartidas para todos los extractores de entidades bancarias.
 Proporciona parseo robusto de fechas, importes, ISINs y divisas.
 """
+import logging
 import re
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tipos de operación reconocidos
@@ -138,10 +141,56 @@ def parse_amount(text: str) -> Optional[float]:
     return None
 
 
+def validate_isin_luhn(isin: str) -> bool:
+    """
+    Validates an ISIN check digit using the Luhn algorithm (ISO 6166).
+
+    Algorithm:
+      1. Convert each character to digits: 0-9 → themselves, A=10..Z=35
+      2. Concatenate into a single digit string
+      3. Apply Luhn mod-10 check on the full digit string
+
+    Returns True if the ISIN has a valid check digit.
+    """
+    if not ISIN_PATTERN.fullmatch(isin):
+        return False
+
+    # Step 1: convert characters to digit string
+    digits = ""
+    for ch in isin:
+        if ch.isdigit():
+            digits += ch
+        elif ch.isalpha():
+            digits += str(ord(ch) - 55)  # A=10, B=11, ..., Z=35
+        else:
+            return False
+
+    # Step 2: Luhn algorithm
+    total = 0
+    parity = len(digits) % 2
+    for i, d in enumerate(digits):
+        n = int(d)
+        if i % 2 == parity:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+
+    return total % 10 == 0
+
+
 def extract_isin(text: str) -> Optional[str]:
-    """Extrae el primer ISIN válido del texto."""
+    """Extrae el primer ISIN válido del texto (regex + Luhn check digit)."""
+    for m in ISIN_PATTERN.finditer(text):
+        candidate = m.group(1)
+        if validate_isin_luhn(candidate):
+            return candidate
+    # Fallback: return first regex match even if Luhn fails (with warning logged)
     m = ISIN_PATTERN.search(text)
-    return m.group(1) if m else None
+    if m:
+        logger.warning("ISIN %s found but Luhn check failed — returning anyway", m.group(1))
+        return m.group(1)
+    return None
 
 
 def extract_currency(text: str) -> str:

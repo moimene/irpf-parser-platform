@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Dict, List, Literal, Optional
 
 DocumentSourceType = Literal["PDF", "IMAGE", "CSV", "XLSX", "DOCX"]
@@ -42,6 +42,21 @@ class StructuredTable(BaseModel):
     source: str
     header: List[Optional[str]]
     rows: List[List[Optional[str]]]
+
+    @field_validator("header", mode="before")
+    @classmethod
+    def clean_header_nulls(cls, v: List[Optional[str]]) -> List[Optional[str]]:
+        """Replace None/whitespace-only cells with empty strings for cleaner output."""
+        return [cell.strip() if isinstance(cell, str) and cell.strip() else "" for cell in (v or [])]
+
+    @field_validator("rows", mode="before")
+    @classmethod
+    def clean_rows_nulls(cls, v: List[List[Optional[str]]]) -> List[List[Optional[str]]]:
+        """Replace None/whitespace-only cells with empty strings at source."""
+        return [
+            [cell.strip() if isinstance(cell, str) and cell.strip() else "" for cell in (row or [])]
+            for row in (v or [])
+        ]
 
 
 class StructuredPage(BaseModel):
