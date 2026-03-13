@@ -130,32 +130,28 @@ REGLAS DE EXTRACCIÓN:
 
 15. COMPLETITUD: es CRÍTICO extraer ABSOLUTAMENTE TODAS las posiciones \
     del fragmento. No omitir ninguna, por pequeña o rara que sea. \
-    Incluir fondos hedge (Cheyne, DB Platinum, Marshall Wace, etc.), \
-    fondos de materias primas (Konwave Gold), fondos de convertibles, \
-    fondos systematic/quant, fondos long/short — TODOS son IICs \
-    declarables. Preferir sobre-extraer (algún falso positivo) a \
-    dejar fuera una posición real.
+    Incluir todo tipo de fondos alternativos (hedge funds, long/short, \
+    systematic/quant, convertibles, materias primas, private equity, \
+    real estate, etc.) — TODOS son IICs declarables en el Modelo 720. \
+    También incluir posiciones con valor de mercado residual, warrants \
+    expirados, notas estructuradas con valor mínimo. Preferir \
+    sobre-extraer (algún falso positivo) a dejar fuera una posición real.
 
 16. MONEDA EN CARTERAS MULTI-DIVISA: cuando el extracto tiene \
-    sub-cuentas o secciones por divisa (CHF, EUR, GBP, JPY, USD…), \
-    la moneda_original de cada posición es la divisa de ESA SECCIÓN, \
-    NO la divisa de referencia/reporting de la cartera. Ejemplo: \
-    si una cuenta muestra saldo "2.00" bajo la sección "CHF", \
-    moneda_original = "CHF" (no "USD" aunque la cartera tenga \
-    reference currency USD). Si un fondo aparece listado con valor \
-    en la columna "Market Value" bajo una tabla cuyo header indica \
-    USD, entonces moneda_original = "USD". Cada posición hereda \
-    la moneda del contexto tabular o sección donde aparece.
+    sub-cuentas o secciones por divisa, la moneda_original de cada \
+    posición es la divisa de ESA SECCIÓN, NO la divisa de referencia \
+    o reporting de la cartera. Cada posición hereda la moneda del \
+    contexto tabular o sección donde aparece. Buscar indicadores de \
+    moneda en cabeceras de tabla, títulos de sección, columnas de \
+    importe, o códigos de cuenta.
 
 17. POSICIONES MULTI-LOTE (crítico): si el mismo ISIN aparece en \
     DIFERENTES tablas, secciones o filas del fragmento con DIFERENTES \
     importes, extraer CADA aparición como una entrada separada. \
-    Esto es común en fondos como FORT Global, Marshall Wace, etc. \
-    donde el cliente tiene múltiples lotes comprados en distintas \
-    fechas. NO sumar ni promediar — extraer cada fila tal cual. \
-    Ejemplo: FORT Global IE00BCZRQS94 aparece dos veces: \
-    35,686.40 USD y 66,810.68 USD → extraer AMBAS como entradas \
-    separadas con el mismo ISIN."""
+    Esto es habitual cuando el cliente tiene múltiples lotes comprados \
+    en distintas fechas o a distintos precios. NO sumar ni promediar \
+    — extraer cada fila tal cual. La deduplicación y agregación se \
+    realizará en post-procesado automático."""
 
 
 # ─────────────────────────────────────────────────────────────────────

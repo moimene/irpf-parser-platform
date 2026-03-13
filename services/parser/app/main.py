@@ -1,5 +1,5 @@
 """
-IRPF Parser Service — FastAPI v0.8.3 (Harvey AI + OpenAI Dual Engine)
+IRPF Parser Service — FastAPI v0.8.4 (Harvey AI + OpenAI Dual Engine)
 Endpoints:
   GET  /health                — health check con versión y capacidades
   POST /parse-document        — parseo Harvey-first con fallback determinista (V1)
@@ -41,7 +41,7 @@ from app.exporters.excel_m720_v2 import export_to_excel
 
 app = FastAPI(
     title="IRPF Parser Service",
-    version="0.8.3",
+    version="0.8.4",
     description="Harvey AI + OpenAI Dual Engine — M720 extraction platform",
 )
 
@@ -92,7 +92,7 @@ def health() -> dict:
     return {
         "ok": True,
         "service": "irpf-parser",
-        "version": "0.8.3",
+        "version": "0.8.4",
         "primary_engine": primary_engine,
         "capabilities": {
             "pdfplumber": has_pdfplumber,

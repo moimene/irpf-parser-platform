@@ -198,7 +198,6 @@ class M720Cuenta(BaseM720Asset):
         default=None,
         description=(
             "Código BIC/SWIFT de la entidad bancaria (8 u 11 caracteres). "
-            "Ejemplo: 'EFGBCHZZ' para EFG Bank. "
             "Buscar en cabecera del extracto o junto al IBAN."
         ),
     )
@@ -208,7 +207,8 @@ class M720Cuenta(BaseM720Asset):
         description=(
             "Número IBAN completo (si clave_identificacion_cuenta = 'I') "
             "o número de cuenta propio del banco (si = 'O'). "
-            "Formato IBAN: 'CH80 0866 7005 6048 4122 6' (con o sin espacios). "
+            "Formato IBAN: 2 letras país + 2 dígitos control + hasta 30 "
+            "alfanuméricos (con o sin espacios). "
             "Extraer exactamente como aparece, sin modificar."
         ),
     )
@@ -216,9 +216,8 @@ class M720Cuenta(BaseM720Asset):
     denominacion_entidad: Optional[str] = Field(
         default=None,
         description=(
-            "Nombre completo de la entidad bancaria. "
-            "Ejemplo: 'EFG Bank AG', 'UBS AG', 'Credit Suisse'. "
-            "Extraer de la cabecera o membrete del documento."
+            "Nombre completo de la entidad bancaria tal como aparece "
+            "en la cabecera o membrete del documento."
         ),
     )
 
@@ -324,18 +323,17 @@ class M720Valor(BaseM720Asset):
         default=None,
         description=(
             "Código ISIN del valor (12 caracteres: 2 letras país + 9 alfanum + 1 check). "
-            "Ejemplo: 'IE00BD1F4M44' (iShares MSCI USA Value). "
             "Si no tiene ISIN, el código interno del banco. "
-            "Buscar en columnas 'ISIN', 'Valor', 'Ref' del extracto."
+            "Buscar en columnas 'ISIN', 'Valor', 'Ref', 'Security ID' del extracto."
         ),
     )
 
     denominacion_entidad_emisora: Optional[str] = Field(
         default=None,
         description=(
-            "Nombre completo del emisor del valor o de la entidad gestora. "
-            "Ejemplo: 'iShares IV PLC', 'Vanguard Funds PLC', 'UBS AG'. "
-            "Para ETFs usar el nombre del fondo/emisor, NO el del broker."
+            "Nombre completo del emisor del valor o de la entidad gestora "
+            "tal como aparece en el extracto. "
+            "Para ETFs usar el nombre del fondo/emisor, NO el del broker custodio."
         ),
     )
 
@@ -415,9 +413,8 @@ class M720IIC(BaseM720Asset):
     identificacion_valores: Optional[str] = Field(
         default=None,
         description=(
-            "Código ISIN del fondo (12 caracteres). "
-            "Ejemplo: 'IE00B55BL213' (New Capital US Growth Fund). "
-            "Extraer de columnas 'ISIN', 'Fund Code', 'Ref'. "
+            "Código ISIN del fondo (12 caracteres: 2 letras país + 9 alfanum + 1 check). "
+            "Extraer de columnas 'ISIN', 'Fund Code', 'Ref', 'Security ID'. "
             "Si no tiene ISIN (fondos privados), usar el código interno."
         ),
     )
@@ -426,9 +423,8 @@ class M720IIC(BaseM720Asset):
         default=None,
         description=(
             "Nombre de la sociedad gestora del fondo (NO del banco custodio). "
-            "Ejemplo: 'New Capital UCITS Fund PLC', "
-            "'BlackRock Global Funds SICAV', 'T.Rowe Price Funds SICAV'. "
-            "Extraer del nombre completo del fondo."
+            "Extraer del nombre completo del fondo tal como aparece en "
+            "el extracto. Incluir sufijos legales (PLC, SICAV, ICAV, etc.)."
         ),
     )
 
@@ -511,9 +507,8 @@ class M720Seguro(BaseM720Asset):
     denominacion_entidad_aseguradora: Optional[str] = Field(
         default=None,
         description=(
-            "Nombre completo de la compañía aseguradora. "
-            "Ejemplo: 'Swiss Life', 'Generali Luxembourg', 'Zurich Insurance'. "
-            "Extraer de la cabecera de la póliza."
+            "Nombre completo de la compañía aseguradora tal como aparece "
+            "en la cabecera de la póliza o extracto."
         ),
     )
 
@@ -609,9 +604,7 @@ class M720Inmueble(BaseM720Asset):
         default=None,
         description=(
             "Nombre del registro de la propiedad o catastro extranjero "
-            "donde está inscrito el inmueble. "
-            "Ejemplo: 'Registro de la Propiedad de Lisboa', "
-            "'Land Registry of England and Wales'."
+            "donde está inscrito el inmueble."
         ),
     )
 
