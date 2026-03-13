@@ -237,6 +237,23 @@ class OpenAIUniversalEngine:
         """Comprueba si OpenAI está configurado."""
         return bool(self.api_key)
 
+    @staticmethod
+    def _find_isins_in_text(text: str) -> Set[str]:
+        """Encuentra todos los ISINs en un texto usando regex."""
+        return set(re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", text))
+
+    @staticmethod
+    def _extracted_isins(result: M720DocumentExtraction) -> Set[str]:
+        """Extrae los ISINs que GPT-4o devolvió en un M720DocumentExtraction."""
+        isins: Set[str] = set()
+        for v in result.valores:
+            if v.identificacion_valores:
+                isins.add(v.identificacion_valores)
+        for i in result.iics:
+            if i.identificacion_valores:
+                isins.add(i.identificacion_valores)
+        return isins
+
     async def _extract_chunk(
         self,
         markdown_chunk: str,
@@ -352,6 +369,93 @@ class OpenAIUniversalEngine:
                     await asyncio.sleep(2 ** (attempt + 1))
                     continue
                 return None
+
+        return None
+
+    async def _rescue_missing_isins(
+        self,
+        markdown_chunk: str,
+        missing_isins: Set[str],
+        *,
+        timeout: float = 120.0,
+    ) -> Optional[M720DocumentExtraction]:
+        """
+        Verification pass: consulta focalizada sobre ISINs que GPT-4o omitió.
+
+        Extrae solo el contexto alrededor de cada ISIN faltante (±500 chars)
+        y envía una consulta específica pidiendo extraer esas posiciones.
+        Esto resuelve el problema de omisión en bloques densos.
+        """
+        if not self.api_key or not missing_isins:
+            return None
+
+        # Extraer contexto local alrededor de cada ISIN faltante
+        isin_contexts: List[str] = []
+        for isin in sorted(missing_isins):
+            pos = markdown_chunk.find(isin)
+            if pos >= 0:
+                start = max(0, pos - 500)
+                end = min(len(markdown_chunk), pos + 500)
+                ctx = markdown_chunk[start:end]
+                isin_contexts.append(
+                    f"--- Contexto del ISIN {isin} ---\n{ctx}\n"
+                )
+
+        if not isin_contexts:
+            return None
+
+        rescue_text = "\n".join(isin_contexts)
+
+        client = AsyncOpenAI(api_key=self.api_key)
+
+        user_message = (
+            "En una primera pasada de extracción, los siguientes ISINs "
+            "fueron OMITIDOS por error. Cada uno corresponde a una posición "
+            "REAL declarable en el Modelo 720. Analiza el contexto de cada "
+            "ISIN y extrae la posición correspondiente.\n\n"
+            "IMPORTANTE: estos ISINs corresponden a posiciones reales con "
+            "valor de mercado a 31 de diciembre. Pueden ser fondos (IIC), "
+            "valores (V) incluyendo warrants/notas estructuradas, o "
+            "cualquier otro tipo de activo declarable. NO los ignores.\n\n"
+            f"{rescue_text}"
+        )
+
+        try:
+            completion = await asyncio.wait_for(
+                client.beta.chat.completions.parse(
+                    model=self.model,
+                    temperature=0.0,
+                    messages=[
+                        {"role": "system", "content": M720_OPENAI_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    response_format=M720DocumentExtraction,
+                ),
+                timeout=timeout,
+            )
+
+            parsed = completion.choices[0].message.parsed
+            if parsed is not None:
+                n = (
+                    len(parsed.cuentas) + len(parsed.valores)
+                    + len(parsed.iics) + len(parsed.seguros)
+                    + len(parsed.inmuebles)
+                )
+                logger.info(
+                    "RESCUE: %d ISINs rescatados → %d activos "
+                    "(C:%d V:%d I:%d S:%d B:%d)",
+                    len(missing_isins),
+                    n,
+                    len(parsed.cuentas),
+                    len(parsed.valores),
+                    len(parsed.iics),
+                    len(parsed.seguros),
+                    len(parsed.inmuebles),
+                )
+                return parsed
+
+        except Exception as e:
+            logger.warning("RESCUE falló: %s", e)
 
         return None
 
@@ -484,6 +588,47 @@ class OpenAIUniversalEngine:
             len(valid_results),
             len(chunks),
         )
+
+        # ── VERIFICATION PASS: rescatar ISINs omitidos ──
+        rescue_tasks = []
+        for i, chunk in enumerate(chunks):
+            if i >= len(results) or isinstance(results[i], Exception):
+                continue
+            result = results[i]
+            if result is None:
+                continue
+
+            chunk_isins = self._find_isins_in_text(chunk)
+            extracted_isins = self._extracted_isins(result)
+            missing = chunk_isins - extracted_isins
+
+            if missing:
+                logger.info(
+                    "VERIFY bloque %d: %d ISINs en texto, %d extraídos, "
+                    "%d FALTANTES: %s",
+                    i + 1,
+                    len(chunk_isins),
+                    len(extracted_isins),
+                    len(missing),
+                    ", ".join(sorted(missing)),
+                )
+                rescue_tasks.append(
+                    self._rescue_missing_isins(chunk, missing)
+                )
+
+        if rescue_tasks:
+            logger.info(
+                "Lanzando %d rescue passes para ISINs faltantes...",
+                len(rescue_tasks),
+            )
+            rescue_results = await asyncio.gather(
+                *rescue_tasks, return_exceptions=True
+            )
+            for rr in rescue_results:
+                if isinstance(rr, Exception):
+                    logger.warning("Rescue pass falló: %s", rr)
+                elif rr is not None:
+                    valid_results.append(rr)
 
         return valid_results
 
