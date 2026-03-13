@@ -1,3 +1,17 @@
+"""
+Schemas V1 — Modelos Pydantic para el parser IRPF (Harvey AI / determinista).
+
+Estos modelos son usados por:
+  - app.parser_engine (ParseDocumentRequest, ParseDocumentResponse)
+  - app.canonical_registry (ParsedRecord)
+  - app.structured_document (StructuredDocument, StructuredPage, StructuredTable)
+  - app.docling_converter (StructuredDocument, StructuredPage, StructuredTable)
+  - app.main (ParseDocumentRequest, ParseDocumentResponse)
+
+El módulo V2 (m720_boe_v2) está en app.schemas.m720_boe_v2
+y es completamente independiente (Fork Lógico).
+"""
+
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, Dict, List, Literal, Optional
 

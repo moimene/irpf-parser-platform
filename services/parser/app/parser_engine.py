@@ -1,11 +1,20 @@
 """
-Motor de parseo adaptativo en 3 niveles:
-  Nivel 1 — Plantillas por entidad (Pictet, Goldman Sachs, Citi, J.P. Morgan) con pdfplumber
-  Nivel 1.5 — Extracción determinista desde structured_document
-  Nivel 2 — Fallback LLM (GPT-4o-mini) para entidades desconocidas o baja extracción
-  Nivel 3 — Escalado a revisión manual si confianza < umbral
+Motor de parseo adaptativo — Harvey AI First.
+
+Pipeline de extracción:
+  Nivel 0   — Harvey AI Cognitive Engine (PRIMARIO para todos los documentos)
+              Map-Reduce + ISIN Luhn. Se usa intensivamente sin restricción de tokens.
+  Nivel 1   — Fallback: Plantillas por entidad (Pictet, Goldman, Citi, JP Morgan)
+  Nivel 1.5 — Fallback: Extracción determinista desde structured_document
+  Nivel 2   — Fallback: LLM (GPT-4o-mini)
+  Nivel 3   — Escalado a revisión manual si confianza < umbral
+
+Harvey AI es el motor principal de calidad. Los parsers deterministas solo actúan
+cuando Harvey no está disponible (sin token) o falla por error técnico.
 """
-from typing import List, Optional, Tuple
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.canonical_registry import derive_canonical_registry
 from app.extractors import base as base_utils
@@ -25,8 +34,19 @@ from app.structured_document import (
     iter_structured_lines,
 )
 
+logger = logging.getLogger(__name__)
+
 MANUAL_REVIEW_THRESHOLD = 0.85
 MIN_RECORDS_FOR_SUCCESS = 1
+
+# Mapeo Harvey asset_type → ParsedRecord record_type
+_HARVEY_TYPE_MAP: Dict[str, str] = {
+    "CUENTA": "CUENTA",
+    "VALOR": "VALOR",
+    "FONDO": "IIC",
+    "SEGURO": "SEGURO",
+    "DESCONOCIDO": "POSICION",
+}
 
 
 def detect_entity(filename: str, entity_hint: Optional[str], text: str) -> str:
@@ -209,6 +229,49 @@ def _extract_from_text(entity: str, text: str, *, template_name: str) -> List[Ex
     return _extract_from_lines(entity, lines, template_name=template_name)
 
 
+def _harvey_dicts_to_parsed(
+    harvey_records: List[Dict[str, Any]],
+) -> Tuple[List[ParsedRecord], List[SourceSpan]]:
+    """Convierte los dicts de Harvey a ParsedRecord + SourceSpan."""
+    parsed: List[ParsedRecord] = []
+    spans: List[SourceSpan] = []
+
+    for idx, rec in enumerate(harvey_records):
+        record_type = _HARVEY_TYPE_MAP.get(
+            str(rec.get("asset_type", "DESCONOCIDO")), "POSICION"
+        )
+        fields: Dict[str, Any] = {
+            k: v
+            for k, v in {
+                "description": rec.get("description"),
+                "isin": rec.get("isin"),
+                "amount": rec.get("amount"),
+                "currency": rec.get("currency"),
+                "quantity": rec.get("quantity"),
+                "clave_bien": rec.get("clave_bien"),
+                "country_code": rec.get("country_code"),
+                "entity_name": rec.get("entity_name"),
+                "strategy": rec.get("strategy"),
+            }.items()
+            if v is not None
+        }
+
+        confidence = float(rec.get("confidence", 0.95))
+        span = SourceSpan(page=1, start=0, end=0, snippet=f"Harvey AI #{idx + 1}")
+
+        parsed.append(
+            ParsedRecord(
+                record_type=record_type,  # type: ignore[arg-type]
+                fields=fields,
+                confidence=confidence,
+                source_spans=[span],
+            )
+        )
+        spans.append(span)
+
+    return parsed, spans
+
+
 def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
     structured_document, content_bytes, structure_warnings = build_structured_document(request)
     warnings: List[str] = list(structure_warnings)
@@ -216,11 +279,124 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
     source_type = infer_source_type(request)
     entity = detect_entity(request.filename, request.entity_hint, full_text)
 
+    # ─────────────────────────────────────────────────────────────────
+    # Nivel 0: Harvey AI — Motor PRIMARIO
+    # Harvey se usa intensivamente para todos los documentos (sin
+    # restricción de tokens). Solo se salta si no hay HARVEY_TOKEN
+    # o si falla por error técnico.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        from app.harvey_engine import extract_unknown_bank_harvey, harvey_engine
+
+        if harvey_engine.is_available:
+            # Construir markdown rico para Harvey: usar page.text cuando
+            # existe, pero para páginas con text vacío (Docling no siempre
+            # genera page breaks → todo el texto va en página 1), incluir
+            # contenido de tablas como texto.
+            page_markdowns: List[str] = []
+            for page in structured_document.pages:
+                page_md = (page.text or "").strip()
+                if not page_md and page.tables:
+                    # Página sin texto OCR pero con tablas estructuradas:
+                    # convertir tablas a markdown para que Harvey las analice
+                    table_lines: List[str] = []
+                    for table in page.tables:
+                        if table.header:
+                            table_lines.append(
+                                "| " + " | ".join(c or "" for c in table.header) + " |"
+                            )
+                            table_lines.append(
+                                "| " + " | ".join("---" for _ in table.header) + " |"
+                            )
+                        for row in table.rows:
+                            table_lines.append(
+                                "| " + " | ".join(c or "" for c in row) + " |"
+                            )
+                    if table_lines:
+                        page_md = "\n".join(table_lines)
+                if page_md:
+                    page_markdowns.append(page_md)
+
+            harvey_markdown = "\n---\n".join(page_markdowns)
+
+            logger.info(
+                "Harvey markdown construction: %d páginas con contenido de %d totales, %d chars",
+                len(page_markdowns),
+                len(structured_document.pages),
+                len(harvey_markdown),
+            )
+
+            if harvey_markdown and len(harvey_markdown.strip()) >= 100:
+                logger.info(
+                    "Harvey AI Motor Primario: entidad=%s, %d chars de markdown, %d páginas",
+                    entity,
+                    len(harvey_markdown),
+                    len(structured_document.pages),
+                )
+
+                # asyncio.run() es seguro aquí: FastAPI ejecuta endpoints sync
+                # en un thread pool que no tiene event loop propio
+                harvey_records = asyncio.run(
+                    extract_unknown_bank_harvey(harvey_markdown)
+                )
+
+                if harvey_records:
+                    harvey_parsed, harvey_spans = _harvey_dicts_to_parsed(harvey_records)
+
+                    global_confidence = round(
+                        sum(r.confidence for r in harvey_parsed) / len(harvey_parsed), 3
+                    )
+                    requires_manual_review = global_confidence < MANUAL_REVIEW_THRESHOLD
+
+                    if requires_manual_review:
+                        warnings.append(
+                            f"Harvey AI: confianza media {global_confidence:.2f} < "
+                            f"{MANUAL_REVIEW_THRESHOLD}; requiere validación."
+                        )
+
+                    asset_records, fiscal_events = derive_canonical_registry(harvey_parsed)
+
+                    logger.info(
+                        "Harvey AI OK: %d activos, confianza %.2f, entidad detectada=%s",
+                        len(harvey_parsed),
+                        global_confidence,
+                        entity,
+                    )
+
+                    return ParseDocumentResponse(
+                        document_id=request.document_id,
+                        expediente_id=request.expediente_id,
+                        parser_strategy="harvey_universal",
+                        template_used="harvey.universal.v1",
+                        confidence=global_confidence,
+                        requires_manual_review=requires_manual_review,
+                        records=harvey_parsed,
+                        asset_records=asset_records,
+                        fiscal_events=fiscal_events,
+                        source_spans=harvey_spans,
+                        structured_document=structured_document,
+                        warnings=warnings,
+                    )
+                else:
+                    warnings.append(
+                        "Harvey AI no extrajo resultados; activando fallback determinista."
+                    )
+            else:
+                warnings.append("Markdown insuficiente para Harvey AI (<100 chars).")
+        else:
+            logger.info("Harvey AI no configurado (HARVEY_TOKEN ausente). Usando pipeline determinista.")
+    except Exception as exc:
+        logger.error("Error en Harvey AI Motor Primario: %s", exc, exc_info=True)
+        warnings.append(f"Error en Harvey AI: {exc}; activando fallback determinista.")
+
+    # ─────────────────────────────────────────────────────────────────
+    # FALLBACK: pipeline determinista (solo si Harvey falla o no está)
+    # ─────────────────────────────────────────────────────────────────
     extracted_records: List[ExtractedRecord] = []
     strategy = "manual"
     template_used = "unknown.v0"
 
-    # Nivel 1: Plantillas por entidad
+    # Nivel 1 (Fallback): Plantillas por entidad
     if entity != "UNKNOWN":
         try:
             if source_type == "PDF" and content_bytes:
@@ -249,12 +425,12 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
                 strategy = "template"
             else:
                 warnings.append(
-                    f"Plantilla {entity} reconocida pero sin registros; activando extracción estructurada genérica."
+                    f"Plantilla {entity} reconocida pero sin registros."
                 )
         except Exception as exc:
             warnings.append(f"Error en extractor {entity}: {exc}")
 
-    # Nivel 1.5: Extracción determinista desde structured_document
+    # Nivel 1.5 (Fallback): Extracción determinista desde structured_document
     if len(extracted_records) < MIN_RECORDS_FOR_SUCCESS and structured_document.pages:
         structured_records = _extract_from_lines(
             entity,
@@ -274,7 +450,7 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
                 else f"{str(source_type).lower()}.structured.v1"
             )
 
-    # Nivel 2: Fallback LLM
+    # Nivel 2 (Fallback): LLM
     if len(extracted_records) < MIN_RECORDS_FOR_SUCCESS:
         if full_text and len(full_text.strip()) >= 30:
             try:
@@ -290,6 +466,7 @@ def parse_document(request: ParseDocumentRequest) -> ParseDocumentResponse:
         else:
             warnings.append("Texto insuficiente para extracción semántica.")
 
+    # Nivel 3: Sin resultados → revisión manual
     if not extracted_records:
         global_confidence = 0.40
         strategy = "manual"
