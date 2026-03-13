@@ -375,6 +375,33 @@ class OpenAIUniversalEngine:
         4. MAP: paralelo con asyncio.Semaphore
         5. REDUCE: filtra errores, retorna resultados exitosos
         """
+        # ── DIAGNOSTIC: buscar ISINs en el markdown completo ──
+        _diag_isins = re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", full_markdown)
+        _diag_unique = sorted(set(_diag_isins))
+        logger.info(
+            "DIAG: %d ISINs únicos en markdown completo (%d chars): %s",
+            len(_diag_unique),
+            len(full_markdown),
+            ", ".join(_diag_unique),
+        )
+        # Buscar ISINs específicos que faltan
+        _missing_targets = ["LU0462954479", "IE00B66SXY43", "CH0491148604"]
+        for _isin in _missing_targets:
+            _pos = full_markdown.find(_isin)
+            if _pos >= 0:
+                _ctx = full_markdown[max(0, _pos - 200) : _pos + 200]
+                logger.info(
+                    "DIAG: ISIN %s ENCONTRADO en pos %d. Contexto: ...%s...",
+                    _isin,
+                    _pos,
+                    _ctx.replace("\n", " | "),
+                )
+            else:
+                logger.warning(
+                    "DIAG: ISIN %s NO ENCONTRADO en el markdown completo",
+                    _isin,
+                )
+
         # SPLIT
         raw_pages = full_markdown.split("\n---\n")
 
@@ -418,7 +445,13 @@ class OpenAIUniversalEngine:
             self.model,
         )
         for i, chunk in enumerate(chunks):
-            logger.info("  Bloque %d: %d chars", i + 1, len(chunk))
+            _chunk_isins = sorted(set(re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", chunk)))
+            logger.info(
+                "  Bloque %d: %d chars | ISINs: %s",
+                i + 1,
+                len(chunk),
+                ", ".join(_chunk_isins) if _chunk_isins else "(ninguno)",
+            )
 
         # MAP
         semaphore = asyncio.Semaphore(max_concurrency)
