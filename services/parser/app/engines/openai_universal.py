@@ -32,6 +32,8 @@ from openai import AsyncOpenAI
 
 from app.extractors.base import validate_isin_luhn
 from app.schemas.m720_boe_v2 import (
+    CoverageWarning,
+    ExtractionCoverage,
     M720Cuenta,
     M720DocumentExtraction,
     M720IIC,
@@ -465,7 +467,7 @@ class OpenAIUniversalEngine:
         *,
         chunk_max_chars: int = 20_000,
         max_concurrency: int = 3,
-    ) -> List[M720DocumentExtraction]:
+    ) -> tuple[List[M720DocumentExtraction], ExtractionCoverage]:
         """
         Motor Map-Reduce para documentos masivos.
 
@@ -477,34 +479,23 @@ class OpenAIUniversalEngine:
         2. SUB-SPLIT: páginas grandes → sub-chunks por párrafos
         3. GROUP: agrupa en bloques de ≤chunk_max_chars
         4. MAP: paralelo con asyncio.Semaphore
-        5. REDUCE: filtra errores, retorna resultados exitosos
+        5. VERIFY: rescatar ISINs omitidos
+        6. COVERAGE: generar informe de cobertura para revisión humana
+        7. REDUCE: filtra errores, retorna resultados + cobertura
+
+        Retorna (resultados, cobertura) para que el caller pueda informar
+        al humano qué datos deben verificarse manualmente.
         """
-        # ── DIAGNOSTIC: buscar ISINs en el markdown completo ──
-        _diag_isins = re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", full_markdown)
-        _diag_unique = sorted(set(_diag_isins))
+        coverage_warnings: List[CoverageWarning] = []
+
+        # ── Inventario de ISINs en el markdown completo ──
+        all_ocr_isins = self._find_isins_in_text(full_markdown)
         logger.info(
-            "DIAG: %d ISINs únicos en markdown completo (%d chars): %s",
-            len(_diag_unique),
+            "COBERTURA: %d ISINs únicos en markdown completo (%d chars): %s",
+            len(all_ocr_isins),
             len(full_markdown),
-            ", ".join(_diag_unique),
+            ", ".join(sorted(all_ocr_isins)),
         )
-        # Buscar ISINs específicos que faltan
-        _missing_targets = ["LU0462954479", "IE00B66SXY43", "CH0491148604"]
-        for _isin in _missing_targets:
-            _pos = full_markdown.find(_isin)
-            if _pos >= 0:
-                _ctx = full_markdown[max(0, _pos - 200) : _pos + 200]
-                logger.info(
-                    "DIAG: ISIN %s ENCONTRADO en pos %d. Contexto: ...%s...",
-                    _isin,
-                    _pos,
-                    _ctx.replace("\n", " | "),
-                )
-            else:
-                logger.warning(
-                    "DIAG: ISIN %s NO ENCONTRADO en el markdown completo",
-                    _isin,
-                )
 
         # SPLIT
         raw_pages = full_markdown.split("\n---\n")
@@ -575,12 +566,35 @@ class OpenAIUniversalEngine:
         tasks = [sem_task(i, chunk) for i, chunk in enumerate(chunks)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # REDUCE
+        # REDUCE — contar bloques exitosos/fallidos
         valid_results: List[M720DocumentExtraction] = []
+        bloques_fallidos = 0
         for i, r in enumerate(results):
             if isinstance(r, Exception):
                 logger.error("OpenAI bloque %d/%d falló: %s", i + 1, len(chunks), r)
-            elif r is not None:
+                bloques_fallidos += 1
+                coverage_warnings.append(CoverageWarning(
+                    tipo="bloque_fallido",
+                    severidad="alta",
+                    bloque=i + 1,
+                    mensaje=(
+                        f"El bloque {i + 1}/{len(chunks)} falló completamente "
+                        f"durante la extracción: {r}. Los activos de este "
+                        f"bloque NO están en los resultados."
+                    ),
+                ))
+            elif r is None:
+                bloques_fallidos += 1
+                coverage_warnings.append(CoverageWarning(
+                    tipo="bloque_fallido",
+                    severidad="alta",
+                    bloque=i + 1,
+                    mensaje=(
+                        f"El bloque {i + 1}/{len(chunks)} no devolvió resultados "
+                        f"(posible rechazo del modelo o timeout)."
+                    ),
+                ))
+            else:
                 valid_results.append(r)
 
         logger.info(
@@ -590,7 +604,10 @@ class OpenAIUniversalEngine:
         )
 
         # ── VERIFICATION PASS: rescatar ISINs omitidos ──
-        rescue_tasks = []
+        rescue_tasks: List[tuple[int, Set[str], asyncio.Task]] = []  # type: ignore[type-arg]
+        rescue_meta: List[tuple[int, Set[str]]] = []  # (bloque, missing_isins)
+        rescue_coros = []
+
         for i, chunk in enumerate(chunks):
             if i >= len(results) or isinstance(results[i], Exception):
                 continue
@@ -612,25 +629,102 @@ class OpenAIUniversalEngine:
                     len(missing),
                     ", ".join(sorted(missing)),
                 )
-                rescue_tasks.append(
+                rescue_meta.append((i + 1, missing))
+                rescue_coros.append(
                     self._rescue_missing_isins(chunk, missing)
                 )
 
-        if rescue_tasks:
+        rescued_isins: Set[str] = set()
+        if rescue_coros:
             logger.info(
                 "Lanzando %d rescue passes para ISINs faltantes...",
-                len(rescue_tasks),
+                len(rescue_coros),
             )
             rescue_results = await asyncio.gather(
-                *rescue_tasks, return_exceptions=True
+                *rescue_coros, return_exceptions=True
             )
-            for rr in rescue_results:
+            for idx, rr in enumerate(rescue_results):
+                bloque_num, missing_set = rescue_meta[idx]
                 if isinstance(rr, Exception):
-                    logger.warning("Rescue pass falló: %s", rr)
+                    logger.warning("Rescue pass falló (bloque %d): %s", bloque_num, rr)
+                    coverage_warnings.append(CoverageWarning(
+                        tipo="rescue_fallido",
+                        severidad="alta",
+                        bloque=bloque_num,
+                        mensaje=(
+                            f"El rescue pass para el bloque {bloque_num} falló: {rr}. "
+                            f"ISINs afectados: {', '.join(sorted(missing_set))}"
+                        ),
+                    ))
                 elif rr is not None:
                     valid_results.append(rr)
+                    # Track which ISINs were actually rescued
+                    rescued_isins.update(self._extracted_isins(rr))
 
-        return valid_results
+        # ── COVERAGE ANALYSIS: identificar ISINs aún no recuperados ──
+        # Recopilar todos los ISINs extraídos (primera pasada + rescue)
+        all_extracted_isins: Set[str] = set()
+        for vr in valid_results:
+            all_extracted_isins.update(self._extracted_isins(vr))
+
+        still_missing = all_ocr_isins - all_extracted_isins
+        if still_missing:
+            logger.warning(
+                "COBERTURA: %d ISINs en OCR NO extraídos: %s",
+                len(still_missing),
+                ", ".join(sorted(still_missing)),
+            )
+            for isin in sorted(still_missing):
+                # Extraer contexto OCR para el humano
+                pos = full_markdown.find(isin)
+                ctx = None
+                if pos >= 0:
+                    start = max(0, pos - 200)
+                    end = min(len(full_markdown), pos + 200)
+                    ctx = full_markdown[start:end].replace("\n", " | ")
+
+                coverage_warnings.append(CoverageWarning(
+                    tipo="isin_no_extraido",
+                    severidad="alta",
+                    isin=isin,
+                    contexto_ocr=ctx,
+                    mensaje=(
+                        f"ISIN {isin} aparece en el texto OCR pero NO fue "
+                        f"extraído como activo. Verificar manualmente si es "
+                        f"una posición declarable a 31 de diciembre."
+                    ),
+                ))
+
+        # Calcular cobertura ISIN
+        n_ocr = len(all_ocr_isins)
+        n_extracted = len(all_extracted_isins & all_ocr_isins)  # Solo los que estaban en OCR
+        cobertura_pct = (n_extracted / n_ocr * 100.0) if n_ocr > 0 else 100.0
+
+        coverage = ExtractionCoverage(
+            isins_en_ocr=n_ocr,
+            isins_extraidos=n_extracted,
+            isins_rescatados=len(rescued_isins),
+            isins_no_recuperados=sorted(still_missing),
+            bloques_total=len(chunks),
+            bloques_exitosos=len(chunks) - bloques_fallidos,
+            bloques_fallidos=bloques_fallidos,
+            rescue_passes=len(rescue_coros),
+            cobertura_isin_pct=round(cobertura_pct, 1),
+            warnings=coverage_warnings,
+        )
+
+        logger.info(
+            "COBERTURA FINAL: %d/%d ISINs (%.1f%%), %d rescatados, "
+            "%d no recuperados, %d warnings",
+            n_extracted,
+            n_ocr,
+            cobertura_pct,
+            len(rescued_isins),
+            len(still_missing),
+            len(coverage_warnings),
+        )
+
+        return valid_results, coverage
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1027,25 +1121,39 @@ def merge_extractions(
 
 async def extract_m720_openai(
     markdown_text: str,
-) -> M720DocumentExtraction:
+) -> tuple[M720DocumentExtraction, ExtractionCoverage]:
     """
     Función pública principal. Recibe el Markdown Docling completo,
     ejecuta map-reduce con OpenAI, aplica Aduana V2, y devuelve
-    un M720DocumentExtraction limpio y deduplicado.
+    un M720DocumentExtraction limpio y deduplicado junto con un
+    informe de cobertura para revisión humana.
+
+    Retorna (extraction, coverage):
+      - extraction: M720DocumentExtraction con activos deduplicados
+      - coverage: ExtractionCoverage con warnings para el revisor humano
 
     Apta para ser llamada desde el endpoint V2 de main.py.
     """
+    empty_coverage = ExtractionCoverage()
+
     if not openai_engine.is_available:
         logger.warning(
             "OpenAI no configurado (OPENAI_API_KEY ausente). "
             "Devolviendo extracción vacía."
         )
-        return M720DocumentExtraction()
+        return M720DocumentExtraction(), empty_coverage
 
-    chunk_results = await openai_engine.map_reduce_extraction(markdown_text)
+    chunk_results, coverage = await openai_engine.map_reduce_extraction(
+        markdown_text
+    )
 
     if not chunk_results:
         logger.info("OpenAI no extrajo ningún resultado del documento.")
-        return M720DocumentExtraction()
+        coverage.warnings.append(CoverageWarning(
+            tipo="bloque_fallido",
+            severidad="alta",
+            mensaje="Ningún bloque devolvió resultados. Extracción vacía.",
+        ))
+        return M720DocumentExtraction(), coverage
 
-    return merge_extractions(chunk_results)
+    return merge_extractions(chunk_results), coverage

@@ -23,6 +23,111 @@ from pydantic import BaseModel, Field
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Coverage Warnings — Trazabilidad para revisión humana
+# ─────────────────────────────────────────────────────────────────────
+
+
+class CoverageWarning(BaseModel):
+    """
+    Advertencia individual de cobertura de extracción.
+
+    El sistema genera estos warnings cuando detecta datos en el OCR
+    que no pudieron ser extraídos o presentan incertidumbre.
+    Diseñados para que un humano pueda localizar y verificar rápidamente.
+    """
+
+    tipo: Literal[
+        "isin_no_extraido",       # ISIN visible en OCR pero no extraído
+        "isin_no_rescatado",      # ISIN que el rescue pass tampoco pudo extraer
+        "isin_no_en_ocr",         # ISIN esperado pero no presente en el markdown (fallo OCR)
+        "bloque_fallido",         # Un bloque completo falló en la extracción
+        "rescue_fallido",         # El rescue pass falló (error de API)
+    ] = Field(description="Tipo de advertencia de cobertura.")
+
+    severidad: Literal["alta", "media", "baja"] = Field(
+        default="media",
+        description=(
+            "Severidad del warning. 'alta' = posible activo declarable omitido, "
+            "'media' = dato incierto que conviene revisar, "
+            "'baja' = informativo."
+        ),
+    )
+
+    isin: Optional[str] = Field(
+        default=None,
+        description="ISIN afectado, si aplica.",
+    )
+
+    contexto_ocr: Optional[str] = Field(
+        default=None,
+        description=(
+            "Fragmento de texto OCR alrededor del dato problemático "
+            "(±200 chars) para que el humano pueda localizarlo rápidamente."
+        ),
+    )
+
+    bloque: Optional[int] = Field(
+        default=None,
+        description="Número de bloque (1-based) donde ocurrió el problema.",
+    )
+
+    mensaje: str = Field(
+        description="Descripción legible del problema para el revisor humano.",
+    )
+
+
+class ExtractionCoverage(BaseModel):
+    """
+    Resumen de cobertura de la extracción V2.
+
+    Permite al humano evaluar la fiabilidad de la extracción y saber
+    exactamente qué revisar manualmente.
+    """
+
+    isins_en_ocr: int = Field(
+        default=0,
+        description="Total de ISINs únicos encontrados por regex en el markdown OCR.",
+    )
+
+    isins_extraidos: int = Field(
+        default=0,
+        description="Total de ISINs únicos presentes en la extracción final.",
+    )
+
+    isins_rescatados: int = Field(
+        default=0,
+        description="ISINs recuperados por el verification pass (no estaban en la primera pasada).",
+    )
+
+    isins_no_recuperados: List[str] = Field(
+        default_factory=list,
+        description=(
+            "ISINs encontrados en el OCR pero que NO aparecen en la extracción final. "
+            "Estos DEBEN ser verificados manualmente por el humano."
+        ),
+    )
+
+    bloques_total: int = Field(default=0, description="Número total de bloques procesados.")
+    bloques_exitosos: int = Field(default=0, description="Bloques que devolvieron resultados.")
+    bloques_fallidos: int = Field(default=0, description="Bloques que fallaron (error/timeout).")
+    rescue_passes: int = Field(default=0, description="Número de rescue passes lanzados.")
+
+    cobertura_isin_pct: float = Field(
+        default=100.0,
+        description=(
+            "Porcentaje de cobertura ISIN: (extraídos / en_ocr) × 100. "
+            "100% = todos los ISINs del OCR fueron extraídos. "
+            "<100% = hay ISINs en el documento que no se extrajeron."
+        ),
+    )
+
+    warnings: List[CoverageWarning] = Field(
+        default_factory=list,
+        description="Lista detallada de advertencias para revisión humana.",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Tipos auxiliares reutilizables
 # ─────────────────────────────────────────────────────────────────────
 

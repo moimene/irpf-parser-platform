@@ -1,5 +1,5 @@
 """
-IRPF Parser Service — FastAPI v0.8.5 (Harvey AI + OpenAI Dual Engine)
+IRPF Parser Service — FastAPI v0.8.6 (Harvey AI + OpenAI Dual Engine)
 Endpoints:
   GET  /health                — health check con versión y capacidades
   POST /parse-document        — parseo Harvey-first con fallback determinista (V1)
@@ -35,13 +35,17 @@ from app.docling_converter import (
 )
 from fastapi.responses import Response
 
-from app.schemas.m720_boe_v2 import M720DocumentExtraction
+from app.schemas.m720_boe_v2 import (
+    CoverageWarning,
+    ExtractionCoverage,
+    M720DocumentExtraction,
+)
 from app.engines.openai_universal import extract_m720_openai, openai_engine
 from app.exporters.excel_m720_v2 import export_to_excel
 
 app = FastAPI(
     title="IRPF Parser Service",
-    version="0.8.5",
+    version="0.8.6",
     description="Harvey AI + OpenAI Dual Engine — M720 extraction platform",
 )
 
@@ -92,7 +96,7 @@ def health() -> dict:
     return {
         "ok": True,
         "service": "irpf-parser",
-        "version": "0.8.5",
+        "version": "0.8.6",
         "primary_engine": primary_engine,
         "capabilities": {
             "pdfplumber": has_pdfplumber,
@@ -133,6 +137,8 @@ def health() -> dict:
                     "isin_luhn_validation",
                     "aduana_v2",
                     "m720_boe_schemas",
+                    "isin_verification_pass",
+                    "coverage_warnings",
                 ],
             },
         },
@@ -177,6 +183,14 @@ class ParseUniversalV2Response(BaseModel):
     engine: str = "openai_v2"
     model: str = ""
     extraction: M720DocumentExtraction
+    coverage: Optional[ExtractionCoverage] = Field(
+        default=None,
+        description=(
+            "Informe de cobertura de la extracción. Incluye ISINs no extraídos, "
+            "bloques fallidos, y warnings detallados para revisión humana. "
+            "Null solo si la extracción no llegó a ejecutarse."
+        ),
+    )
     markdown_length: int = 0
     pages_count: int = 0
     tables_count: int = 0
@@ -247,8 +261,9 @@ async def parse_universal_v2(request: ParseUniversalV2Request) -> ParseUniversal
     )
 
     # ── 4. Extracción OpenAI con map-reduce + Aduana V2 ──
+    coverage: Optional[ExtractionCoverage] = None
     try:
-        extraction = await extract_m720_openai(markdown)
+        extraction, coverage = await extract_m720_openai(markdown)
     except Exception as e:
         logger.error("V2 OpenAI extraction failed: %s", e, exc_info=True)
         return ParseUniversalV2Response(
@@ -268,8 +283,15 @@ async def parse_universal_v2(request: ParseUniversalV2Request) -> ParseUniversal
         + len(extraction.seguros)
         + len(extraction.inmuebles)
     )
+
+    # Incorporar warnings de cobertura como strings legibles también
+    if coverage and coverage.warnings:
+        for cw in coverage.warnings:
+            warnings.append(f"[{cw.severidad.upper()}] {cw.mensaje}")
+
     logger.info(
-        "V2 completado: %d activos (C:%d V:%d I:%d S:%d B:%d) en %.1fs",
+        "V2 completado: %d activos (C:%d V:%d I:%d S:%d B:%d) en %.1fs | "
+        "Cobertura ISIN: %.1f%% (%d/%d)",
         total_assets,
         len(extraction.cuentas),
         len(extraction.valores),
@@ -277,12 +299,16 @@ async def parse_universal_v2(request: ParseUniversalV2Request) -> ParseUniversal
         len(extraction.seguros),
         len(extraction.inmuebles),
         elapsed,
+        coverage.cobertura_isin_pct if coverage else 100.0,
+        coverage.isins_extraidos if coverage else 0,
+        coverage.isins_en_ocr if coverage else 0,
     )
 
     return ParseUniversalV2Response(
         engine="openai_v2",
         model=openai_engine.model,
         extraction=extraction,
+        coverage=coverage,
         markdown_length=len(markdown),
         pages_count=pages_count,
         tables_count=tables_count,
