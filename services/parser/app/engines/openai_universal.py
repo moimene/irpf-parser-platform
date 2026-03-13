@@ -126,7 +126,15 @@ REGLAS DE EXTRACCIÓN:
 14. Posiciones multi-lote: si el mismo ISIN aparece múltiples veces \
     en el documento (distintas fechas de compra, distintos lotes), \
     extraer CADA lote como una entrada SEPARADA. La deduplicación \
-    y suma se hará en post-procesado, no en la extracción."""
+    y suma se hará en post-procesado, no en la extracción.
+
+15. COMPLETITUD: es CRÍTICO extraer ABSOLUTAMENTE TODAS las posiciones \
+    del fragmento. No omitir ninguna, por pequeña o rara que sea. \
+    Incluir fondos hedge (Cheyne, DB Platinum, Marshall Wace, etc.), \
+    fondos de materias primas (Konwave Gold), fondos de convertibles, \
+    fondos systematic/quant, fondos long/short — TODOS son IICs \
+    declarables. Preferir sobre-extraer (algún falso positivo) a \
+    dejar fuera una posición real."""
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -329,14 +337,15 @@ class OpenAIUniversalEngine:
         self,
         full_markdown: str,
         *,
-        chunk_max_chars: int = 40_000,
+        chunk_max_chars: int = 20_000,
         max_concurrency: int = 3,
     ) -> List[M720DocumentExtraction]:
         """
         Motor Map-Reduce para documentos masivos.
 
         GPT-4o soporta 128K contexto. Con el system prompt (~2K chars)
-        + user wrapper, fijamos chunks en 40K chars para calidad óptima.
+        + user wrapper, fijamos chunks en 20K chars para máxima completitud
+        (chunks más pequeños → GPT-4o no omite posiciones por límite de output).
 
         1. SPLIT: por saltos de página Docling (\\n---\\n)
         2. SUB-SPLIT: páginas grandes → sub-chunks por párrafos
