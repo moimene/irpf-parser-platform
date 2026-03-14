@@ -185,12 +185,18 @@ async def extract_patrimonio(request: ExtractPatrimonioRequest) -> CanonicalExtr
             try:
                 all_instruments.append(InstrumentRecord(**raw))
             except Exception:  # noqa: BLE001
-                pass
+                all_orphans.append(OrphanRecord(
+                    raw_data=raw, reason="instrument parse error",
+                    source_section="unknown", confidence=0.3,
+                ))
         for raw in data.get("holdings", []):
             try:
                 all_holdings.append(HoldingRecord(**raw))
             except Exception:  # noqa: BLE001
-                pass
+                all_orphans.append(OrphanRecord(
+                    raw_data=raw, reason="holding parse error",
+                    source_section="unknown", confidence=0.3,
+                ))
         for raw in data.get("snapshots", []):
             try:
                 all_snapshots.append(SnapshotRecord(**raw))
@@ -243,7 +249,7 @@ async def extract_patrimonio(request: ExtractPatrimonioRequest) -> CanonicalExtr
             rows_found=rows_found,
             rows_extracted=rows_extracted,
             rows_orphaned=len(all_orphans),
-            rows_skipped=rows_found - rows_extracted - len(all_orphans),
+            rows_skipped=max(0, rows_found - rows_extracted - len(all_orphans)),
         ),
         warnings=[f"Failed chunks: {failed_chunk_ids}"] if failed_chunk_ids else [],
         chunk_count=len(chunk_tasks),
