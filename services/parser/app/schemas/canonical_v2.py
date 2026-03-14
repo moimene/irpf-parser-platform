@@ -352,6 +352,7 @@ class ReviewRequest(BaseModel):
     rentas_extraction: Optional[CanonicalExtraction] = None
     legal_extraction: Optional[CanonicalExtraction] = None
     prior_year_snapshots: Optional[list[SnapshotRecord]] = None
+    content_base64: Optional[str] = None
 
     @field_validator("ejercicio")
     @classmethod

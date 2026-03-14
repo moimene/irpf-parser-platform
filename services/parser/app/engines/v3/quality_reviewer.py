@@ -227,11 +227,10 @@ async def run_quality_review(request: ReviewRequest) -> ReviewResponse:
     # Harvey legal sub-check for unstructured PDFs only
     if (
         request.plan.doc_type == DocType.unstructured_pdf
-        and hasattr(request, "content_base64")
-        and getattr(request, "content_base64", None)
+        and request.content_base64
     ):
         harvey_recs = await _harvey_legal_check(
-            getattr(request, "content_base64"),
+            request.content_base64,
             request.document_id,
         )
         recommendations.extend(harvey_recs)
