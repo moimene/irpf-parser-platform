@@ -30,6 +30,14 @@ from app.schemas.canonical_v2 import (
 _openai_client: AsyncOpenAI | None = None
 
 
+def _safe_enum(enum_cls: type, value: object, default: str) -> Any:
+    """Safely construct an enum, falling back to default on ValueError."""
+    try:
+        return enum_cls(value)
+    except (ValueError, KeyError):
+        return enum_cls(default)
+
+
 def _get_openai() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
@@ -145,10 +153,10 @@ async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
             section_id=s.get("section_id", f"sec_{i:02d}"),
             label=s.get("label", f"Section {i}"),
             source=s.get("source", "unknown"),
-            extraction_pass=ExtractionPass(s.get("extraction_pass", "skip")),
-            section_type=SectionType(s.get("section_type", "UNKNOWN")),
+            extraction_pass=_safe_enum(ExtractionPass, s.get("extraction_pass", "skip"), "skip"),
+            section_type=_safe_enum(SectionType, s.get("section_type", "UNKNOWN"), "UNKNOWN"),
             reason=s.get("reason", ""),
-            chunk_strategy=ChunkStrategy(s.get("chunk_strategy", "full")),
+            chunk_strategy=_safe_enum(ChunkStrategy, s.get("chunk_strategy", "full"), "full"),
             estimated_rows=int(s.get("estimated_rows", 0)),
         ))
 
