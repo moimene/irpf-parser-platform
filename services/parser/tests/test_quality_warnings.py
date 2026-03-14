@@ -96,3 +96,22 @@ def test_quality_check_no_false_positive_low_value():
     warnings = _run_quality_checks(extraction)
     tipos = [w.tipo for w in warnings]
     assert "calidad_activo_extinguido" not in tipos
+
+
+from app.engines.openai_universal import _fix_encoding
+
+
+def test_fix_encoding_corrects_mojibake():
+    broken = "6 route de TrÃ¨ves"
+    fixed = _fix_encoding(broken)
+    assert "Trèves" in fixed
+    assert "Ã" not in fixed
+
+
+def test_fix_encoding_preserves_clean_text():
+    clean = "6 route de Trèves"
+    assert _fix_encoding(clean) == clean
+
+
+def test_fix_encoding_handles_empty_string():
+    assert _fix_encoding("") == ""

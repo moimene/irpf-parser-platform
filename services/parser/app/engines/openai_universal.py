@@ -42,6 +42,12 @@ from app.schemas.m720_boe_v2 import (
     M720Valor,
 )
 
+try:
+    import ftfy as _ftfy
+    _HAS_FTFY = True
+except ImportError:
+    _HAS_FTFY = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -207,6 +213,20 @@ def _split_text_into_chunks(text: str, max_chars: int) -> List[str]:
         chunks.append(current)
 
     return [c for c in chunks if c.strip()]
+
+
+def _fix_encoding(text: str) -> str:
+    """
+    Corrige artefactos de encoding mojibake (UTF-8 leído como Latin-1).
+    Ejemplo: 'TrÃ¨ves' → 'Trèves'
+
+    Usa ftfy si está disponible. Si no, retorna el texto sin cambios.
+    """
+    if not text:
+        return text
+    if _HAS_FTFY:
+        return _ftfy.fix_text(text)
+    return text
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1257,6 +1277,9 @@ async def extract_m720_openai(
             "Devolviendo extracción vacía."
         )
         return M720DocumentExtraction(), empty_coverage
+
+    # Fix encoding artifacts (mojibake) before OpenAI extraction
+    markdown_text = _fix_encoding(markdown_text)
 
     chunk_results, coverage = await openai_engine.map_reduce_extraction(
         markdown_text
