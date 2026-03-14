@@ -1059,6 +1059,17 @@ def merge_extractions(
     # ── Valores (Clave V) ──
     for chunk in chunks:
         for valor in chunk.valores:
+            # Filtro de activos extinguidos: saldo=0 Y unidades=0
+            if (valor.saldo_31_diciembre or 0.0) == 0.0 and \
+               (valor.numero_valores is None or (valor.numero_valores or 0.0) == 0.0):
+                stats["aggregation_filtered"] += 1
+                logger.debug(
+                    "Zero-balance extinguido filtrado: %s %s",
+                    valor.identificacion_valores or "",
+                    valor.denominacion_entidad_emisora or "",
+                )
+                continue
+
             name = valor.denominacion_entidad_emisora or ""
             if _is_aggregation_entry(name):
                 stats["aggregation_filtered"] += 1
@@ -1135,6 +1146,17 @@ def merge_extractions(
     # ── IICs (Clave I) — misma lógica que Valores ──
     for chunk in chunks:
         for iic in chunk.iics:
+            # Filtro de activos extinguidos: valor=0 Y unidades=0
+            if (iic.valor_liquidativo_31_diciembre or 0.0) == 0.0 and \
+               (iic.numero_valores is None or (iic.numero_valores or 0.0) == 0.0):
+                stats["aggregation_filtered"] += 1
+                logger.debug(
+                    "Zero-balance IIC extinguido filtrado: %s %s",
+                    iic.identificacion_valores or "",
+                    iic.denominacion_entidad_gestora or "",
+                )
+                continue
+
             name = iic.denominacion_entidad_gestora or ""
             if _is_aggregation_entry(name):
                 stats["aggregation_filtered"] += 1

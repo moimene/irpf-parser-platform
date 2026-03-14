@@ -98,7 +98,7 @@ def test_quality_check_no_false_positive_low_value():
     assert "calidad_activo_extinguido" not in tipos
 
 
-from app.engines.openai_universal import _fix_encoding
+from app.engines.openai_universal import _fix_encoding, merge_extractions
 
 
 def test_fix_encoding_corrects_mojibake():
@@ -115,3 +115,64 @@ def test_fix_encoding_preserves_clean_text():
 
 def test_fix_encoding_handles_empty_string():
     assert _fix_encoding("") == ""
+
+
+def test_merge_filters_zero_balance_zero_units_valor():
+    extraction = M720DocumentExtraction(
+        valores=[
+            M720Valor(
+                denominacion_entidad_emisora="SHELL PLC RTS",
+                identificacion_valores="NL0015002E16",
+                saldo_31_diciembre=0.0,
+                numero_valores=0.0,
+                moneda_original="EUR",
+                pais_entidad_o_inmueble="NL",
+            ),
+            M720Valor(
+                denominacion_entidad_emisora="APPLE INC",
+                identificacion_valores="US0378331005",
+                saldo_31_diciembre=5000.0,
+                numero_valores=10.0,
+                moneda_original="USD",
+                pais_entidad_o_inmueble="US",
+            ),
+        ]
+    )
+    merged = merge_extractions([extraction])
+    names = [v.denominacion_entidad_emisora for v in merged.valores]
+    assert "SHELL PLC RTS" not in names
+    assert "APPLE INC" in names
+
+
+def test_merge_keeps_zero_balance_nonzero_units():
+    """Warrant con valor 0 pero con unidades → no es extinguido, mantener."""
+    extraction = M720DocumentExtraction(
+        valores=[
+            M720Valor(
+                denominacion_entidad_emisora="WARRANT XYZ",
+                saldo_31_diciembre=0.0,
+                numero_valores=100.0,
+                moneda_original="EUR",
+                pais_entidad_o_inmueble="DE",
+            ),
+        ]
+    )
+    merged = merge_extractions([extraction])
+    assert len(merged.valores) == 1
+
+
+def test_merge_keeps_nonzero_balance_zero_units():
+    """Asset con valor > 0 pero unidades = 0 (ej: bono) → mantener."""
+    extraction = M720DocumentExtraction(
+        valores=[
+            M720Valor(
+                denominacion_entidad_emisora="BONO CORP",
+                saldo_31_diciembre=1000.0,
+                numero_valores=0.0,
+                moneda_original="EUR",
+                pais_entidad_o_inmueble="FR",
+            ),
+        ]
+    )
+    merged = merge_extractions([extraction])
+    assert len(merged.valores) == 1
