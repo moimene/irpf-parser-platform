@@ -318,6 +318,20 @@ async def parse_universal_v2(request: ParseUniversalV2Request) -> ParseUniversal
     )
 
 
+from app.schemas.canonical_v2 import (
+    PlanRequest, PlanResponse,
+    ExtractPatrimonioRequest, ExtractPatrimonioResponse,
+    ExtractRentasRequest, ExtractRentasResponse,
+    ExtractLegalRequest, ExtractLegalResponse,
+    ReviewRequest, ReviewResponse,
+)
+from app.engines.v3.orchestrator import build_extraction_plan
+from app.engines.v3.extractor_patrimonio import extract_patrimonio
+from app.engines.v3.extractor_rentas import extract_rentas
+from app.engines.v3.extractor_legal import extract_legal
+from app.engines.v3.quality_reviewer import run_quality_review
+
+
 @app.post("/api/v2/export-excel")
 async def export_excel_v2(extraction: M720DocumentExtraction) -> Response:
     """
@@ -338,3 +352,40 @@ async def export_excel_v2(extraction: M720DocumentExtraction) -> Response:
             "Content-Disposition": 'attachment; filename="m720_extraction_v2.xlsx"',
         },
     )
+
+
+# ─── V3 Canonical Ingestion Pipeline ──────────────────────────────────────────
+
+
+@app.post("/api/v3/plan", response_model=PlanResponse, tags=["V3 Canonical"])
+async def v3_plan(request: PlanRequest) -> PlanResponse:
+    """Orchestrator: classify document type and build extraction plan."""
+    plan = await build_extraction_plan(request)
+    return PlanResponse(document_id=request.document_id, plan=plan)
+
+
+@app.post("/api/v3/extract/patrimonio", response_model=ExtractPatrimonioResponse, tags=["V3 Canonical"])
+async def v3_extract_patrimonio(request: ExtractPatrimonioRequest) -> ExtractPatrimonioResponse:
+    """Pass 1: Extract holdings, snapshots, and instruments."""
+    extraction = await extract_patrimonio(request)
+    return ExtractPatrimonioResponse(document_id=request.document_id, extraction=extraction)
+
+
+@app.post("/api/v3/extract/rentas", response_model=ExtractRentasResponse, tags=["V3 Canonical"])
+async def v3_extract_rentas(request: ExtractRentasRequest) -> ExtractRentasResponse:
+    """Pass 2: Extract income events and transactions."""
+    extraction = await extract_rentas(request)
+    return ExtractRentasResponse(document_id=request.document_id, extraction=extraction)
+
+
+@app.post("/api/v3/extract/legal", response_model=ExtractLegalResponse, tags=["V3 Canonical"])
+async def v3_extract_legal(request: ExtractLegalRequest) -> ExtractLegalResponse:
+    """Pass 3: Extract legal annotations (roles, reinversión, exoneración)."""
+    extraction = await extract_legal(request)
+    return ExtractLegalResponse(document_id=request.document_id, extraction=extraction)
+
+
+@app.post("/api/v3/review", response_model=ReviewResponse, tags=["V3 Canonical"])
+async def v3_review(request: ReviewRequest) -> ReviewResponse:
+    """Quality Reviewer: consistency checks, YoY anomalies, cross-pass gaps."""
+    return await run_quality_review(request)
