@@ -151,7 +151,13 @@ REGLAS DE EXTRACCIÓN:
     o reporting de la cartera. Cada posición hereda la moneda del \
     contexto tabular o sección donde aparece. Buscar indicadores de \
     moneda en cabeceras de tabla, títulos de sección, columnas de \
-    importe, o códigos de cuenta.
+    importe, o códigos de cuenta.\n\
+    ⚠ CRÍTICO — EJEMPLO REAL DE ERROR A EVITAR: si una tabla muestra\n\
+    la misma cuenta IBAN en 4 filas con monedas EUR/CHF/USD/GBP y\n\
+    saldos distintos (ej: EUR 1.155,70 | CHF 81.320,81 | USD ... | GBP ...),\n\
+    extraer CADA fila como cuenta separada con su propia moneda_original.\n\
+    JAMÁS asignar el saldo CHF (81.320,81) a la entrada EUR. Cada fila\n\
+    de la tabla → una cuenta con exactamente la moneda y saldo de ESA fila.
 
 17. POSICIONES MULTI-LOTE (crítico): si el mismo ISIN aparece en \
     DIFERENTES tablas, secciones o filas del fragmento con DIFERENTES \
