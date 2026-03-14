@@ -843,6 +843,121 @@ def _get_country(asset: object) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Quality Checks — Data quality warnings post-merge
+# ─────────────────────────────────────────────────────────────────────
+
+# Regex para detectar artefactos de encoding mojibake (UTF-8 leído como Latin-1)
+# Patrón: 'Ã' seguido de un carácter en rango 0x80-0xBF
+_MOJIBAKE_RE = re.compile(r"Ã[\x80-\xbf]|Â[\x80-\xbf]")
+
+# Regex para detectar palabras fusionadas por OCR: >10 mayúsculas consecutivas sin espacio
+_OCR_FUSION_RE = re.compile(r"[A-Z]{11,}")
+
+
+def _run_quality_checks(extraction: M720DocumentExtraction) -> List[CoverageWarning]:
+    """
+    Analiza un M720DocumentExtraction post-merge y genera advertencias de calidad.
+
+    Detecta:
+    1. calidad_encoding: artefactos mojibake en campos de texto
+    2. calidad_nombre_fusion: nombres con palabras fusionadas por OCR (>10 mayúsculas consecutivas)
+    3. calidad_activo_extinguido: activos con saldo=0 Y unidades=0 (derechos extinguidos)
+
+    No modifica el extraction. Devuelve lista de CoverageWarning (puede ser vacía).
+    """
+    warnings: List[CoverageWarning] = []
+
+    def _all_text_fields(asset: object) -> List[str]:
+        texts: List[str] = []
+        for attr in (
+            "denominacion_entidad", "denominacion_entidad_emisora",
+            "denominacion_entidad_gestora", "denominacion_entidad_aseguradora",
+            "denominacion_registro",
+        ):
+            val = getattr(asset, attr, None)
+            if val:
+                texts.append(str(val))
+        for addr_attr in ("domicilio_entidad", "domicilio_inmueble"):
+            addr = getattr(asset, addr_attr, None)
+            if addr:
+                for field in ("calle", "poblacion", "provincia"):
+                    v = getattr(addr, field, None)
+                    if v:
+                        texts.append(str(v))
+        return texts
+
+    all_assets: List[object] = (
+        list(extraction.cuentas)
+        + list(extraction.valores)
+        + list(extraction.iics)
+        + list(extraction.seguros)
+        + list(extraction.inmuebles)
+    )
+
+    # ── Check 1: Encoding artifacts ──
+    for asset in all_assets:
+        for text in _all_text_fields(asset):
+            if _MOJIBAKE_RE.search(text):
+                name = _get_name(asset)
+                warnings.append(CoverageWarning(
+                    tipo="calidad_encoding",
+                    severidad="media",
+                    mensaje=(
+                        f"Posible artefacto de encoding en '{name}': "
+                        f"texto '{text}' contiene secuencias mojibake. "
+                        f"Verificar manualmente la dirección/nombre."
+                    ),
+                ))
+                break  # Un warning por asset es suficiente
+
+    # ── Check 2: OCR-fusion names ──
+    for asset in all_assets:
+        name = _get_name(asset)
+        if not name:
+            continue
+        matches = _OCR_FUSION_RE.findall(name)
+        if matches:
+            warnings.append(CoverageWarning(
+                tipo="calidad_nombre_fusion",
+                severidad="baja",
+                mensaje=(
+                    f"Posible nombre fusionado por OCR: '{name}'. "
+                    f"Palabras sospechosas: {', '.join(matches)}. "
+                    f"Verificar si falta espacio entre palabras."
+                ),
+            ))
+
+    # ── Check 3: Zero-balance extinguished assets ──
+    for asset in (list(extraction.valores) + list(extraction.iics)):
+        amount = _get_amount(asset)
+        units = getattr(asset, "numero_valores", None)
+        if amount == 0.0 and (units is None or units == 0.0):
+            isin = _get_isin(asset)
+            name = _get_name(asset)
+            warnings.append(CoverageWarning(
+                tipo="calidad_activo_extinguido",
+                severidad="baja",
+                isin=isin,
+                mensaje=(
+                    f"Activo '{name}' (ISIN: {isin or 'N/A'}) tiene saldo=0 "
+                    f"y unidades=0. Posible derecho extinguido no declarable. "
+                    f"Verificar si debe excluirse de la declaración."
+                ),
+            ))
+
+    if warnings:
+        logger.info(
+            "Quality checks: %d warnings (%d encoding, %d OCR-fusion, %d extinguidos)",
+            len(warnings),
+            sum(1 for w in warnings if w.tipo == "calidad_encoding"),
+            sum(1 for w in warnings if w.tipo == "calidad_nombre_fusion"),
+            sum(1 for w in warnings if w.tipo == "calidad_activo_extinguido"),
+        )
+
+    return warnings
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Merge + Aduana Matemática V2
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1156,4 +1271,11 @@ async def extract_m720_openai(
         ))
         return M720DocumentExtraction(), coverage
 
-    return merge_extractions(chunk_results), coverage
+    merged = merge_extractions(chunk_results)
+
+    # ── Quality checks: data-quality warnings post-merge ──
+    quality_warnings = _run_quality_checks(merged)
+    if quality_warnings:
+        coverage.warnings.extend(quality_warnings)
+
+    return merged, coverage
