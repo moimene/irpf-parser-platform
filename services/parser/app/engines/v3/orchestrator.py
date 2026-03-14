@@ -1,0 +1,179 @@
+"""
+orchestrator.py — V3 Orchestrator: classify document type and build ExtractionPlan.
+
+Routing:
+  - bank_xls / advisor_xls / structured_pdf / txt_720: OpenAI gpt-4o only
+  - unstructured_pdf: Harvey AI pre-analysis → then OpenAI gpt-4o for plan construction
+
+The orchestrator does NOT extract data — it only plans the extraction.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from typing import Any
+
+from openai import AsyncOpenAI
+
+from app.schemas.canonical_v2 import (
+    DocType,
+    ExtractionPlan,
+    PlannedSection,
+    SectionType,
+    ExtractionPass,
+    ChunkStrategy,
+    PlanRequest,
+)
+
+_openai_client: AsyncOpenAI | None = None
+
+
+def _get_openai() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    return _openai_client
+
+
+async def run_harvey_preanalysis(content_base64: str, filename: str) -> str:
+    """
+    Run Harvey AI pre-analysis on an unstructured PDF.
+    Returns the Harvey analysis text for use as context in the OpenAI plan call.
+    Called ONLY for unstructured_pdf doc_type.
+    """
+    try:
+        # Import locally to avoid circular imports; harvey_engine is a top-level module
+        from app.harvey_engine import HarveyCognitiveEngine  # type: ignore[import]
+        engine = HarveyCognitiveEngine()
+        prompt = (
+            "Analyze this document and identify: "
+            "1) What type of financial document is this? "
+            "2) What custodian/bank issued it? "
+            "3) What sections contain asset positions (POSITIONS)? "
+            "4) What sections contain transactions/income (TRANSACTIONS)? "
+            "5) What fiscal year does it cover? "
+            "Answer concisely in structured format."
+        )
+        result = await engine._call_completion(prompt)
+        return str(result) if result else "Harvey pre-analysis returned empty response"
+    except Exception as exc:  # noqa: BLE001
+        return f"Harvey pre-analysis unavailable: {exc}"
+
+
+async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
+    """
+    Build an ExtractionPlan for the given document.
+
+    Steps:
+      1. If unstructured_pdf: call Harvey for pre-analysis context
+      2. Call OpenAI gpt-4o with JSON mode to classify doc type and plan sections
+      3. Return structured ExtractionPlan
+    """
+    harvey_context = ""
+    if request.content_base64 and _looks_like_unstructured_pdf(request.filename):
+        harvey_context = await run_harvey_preanalysis(
+            request.content_base64, request.filename
+        )
+
+    # Build the prompt
+    sheet_info = ""
+    if request.sheet_metas:
+        sheet_lines = []
+        for m in request.sheet_metas:
+            preview_str = "; ".join(
+                ", ".join(row) for row in m.preview[:2]
+            )
+            sheet_lines.append(
+                f"  - Sheet '{m.name}': {m.row_count} rows × {m.col_count} cols. "
+                f"Preview: [{preview_str}]"
+            )
+        sheet_info = "Sheets available:\n" + "\n".join(sheet_lines)
+
+    harvey_section = (
+        f"\nHarvey AI pre-analysis:\n{harvey_context}\n" if harvey_context else ""
+    )
+
+    system_prompt = (
+        "You are a financial document classifier and extraction planner for the Spanish Modelo 720 "
+        "foreign asset declaration system. Your job is to analyze a financial document and produce "
+        "a structured extraction plan.\n\n"
+        "DocType options: bank_xls, advisor_xls, structured_pdf, unstructured_pdf, txt_720, unknown\n"
+        "SectionType options: POSITIONS, TRANSACTIONS, SUMMARY, UNKNOWN\n"
+        "ExtractionPass options: patrimonio, rentas, skip\n"
+        "ChunkStrategy options: full, by_date_range, by_row_group\n\n"
+        "Rules:\n"
+        "- POSITIONS sections → extraction_pass: patrimonio\n"
+        "- TRANSACTIONS sections → extraction_pass: rentas\n"
+        "- SUMMARY sections → extraction_pass: skip (they are totals, not detail)\n"
+        "- For large transaction sheets (>500 rows), use chunk_strategy: by_date_range\n"
+        "- For structured row groups (e.g. asset categories), use by_row_group\n"
+        "- For small or single-section docs, use full\n\n"
+        "Return ONLY valid JSON matching the ExtractionPlan schema."
+    )
+
+    user_prompt = (
+        f"Document: {request.filename}\n"
+        f"Fiscal year: {request.ejercicio}\n"
+        f"{sheet_info}\n"
+        f"{harvey_section}\n"
+        "Produce an ExtractionPlan JSON with: doc_type, doc_type_confidence, custodian (if known), "
+        "ejercicio, reference_date (YYYY-MM-DD, use Dec 31 of ejercicio if unknown), "
+        "base_currency, sections (array), estimated_chunks, estimated_instruments, warnings."
+    )
+
+    client = _get_openai()
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.1,
+        max_tokens=2000,
+    )
+
+    raw = response.choices[0].message.content or "{}"
+    data: dict[str, Any] = json.loads(raw)
+
+    # Normalize sections
+    sections: list[PlannedSection] = []
+    for i, s in enumerate(data.get("sections", [])):
+        sections.append(PlannedSection(
+            section_id=s.get("section_id", f"sec_{i:02d}"),
+            label=s.get("label", f"Section {i}"),
+            source=s.get("source", "unknown"),
+            extraction_pass=ExtractionPass(s.get("extraction_pass", "skip")),
+            section_type=SectionType(s.get("section_type", "UNKNOWN")),
+            reason=s.get("reason", ""),
+            chunk_strategy=ChunkStrategy(s.get("chunk_strategy", "full")),
+            estimated_rows=int(s.get("estimated_rows", 0)),
+        ))
+
+    doc_type_str = data.get("doc_type", "unknown")
+    try:
+        doc_type = DocType(doc_type_str)
+    except ValueError:
+        doc_type = DocType.unknown
+
+    return ExtractionPlan(
+        doc_type=doc_type,
+        doc_type_confidence=float(data.get("doc_type_confidence", 0.5)),
+        custodian=data.get("custodian"),
+        custodian_bic=data.get("custodian_bic"),
+        client_nif=data.get("client_nif"),
+        ejercicio=request.ejercicio,
+        reference_date=data.get("reference_date", f"{request.ejercicio}-12-31"),
+        base_currency=data.get("base_currency", "EUR"),
+        sections=sections,
+        estimated_chunks=int(data.get("estimated_chunks", len(sections))),
+        estimated_instruments=int(data.get("estimated_instruments", 0)),
+        warnings=data.get("warnings", []),
+    )
+
+
+def _looks_like_unstructured_pdf(filename: str) -> bool:
+    """Heuristic: PDF files are potentially unstructured. XLS/CSV are always structured."""
+    return filename.lower().endswith(".pdf")
