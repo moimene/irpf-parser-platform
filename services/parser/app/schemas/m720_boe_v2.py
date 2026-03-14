@@ -42,6 +42,10 @@ class CoverageWarning(BaseModel):
         "isin_no_en_ocr",         # ISIN esperado pero no presente en el markdown (fallo OCR)
         "bloque_fallido",         # Un bloque completo falló en la extracción
         "rescue_fallido",         # El rescue pass falló (error de API)
+        # ── Data-quality warnings (nuevos) ──
+        "calidad_encoding",          # Artefacto de encoding (mojibake) en campo de texto
+        "calidad_nombre_fusion",     # Nombre con palabras fusionadas por OCR sin espacios
+        "calidad_activo_extinguido", # Activo con saldo=0 y unidades=0 (derecho extinguido)
     ] = Field(description="Tipo de advertencia de cobertura.")
 
     severidad: Literal["alta", "media", "baja"] = Field(
