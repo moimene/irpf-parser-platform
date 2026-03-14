@@ -209,7 +209,7 @@ async def extract_rentas(request: ExtractRentasRequest) -> CanonicalExtraction:
         for raw in data.get("income_events", []):
             try:
                 # Ensure ejercicio is set from request if missing
-                if "ejercicio" not in raw:
+                if not raw.get("ejercicio"):
                     raw["ejercicio"] = request.ejercicio
                 # Validate event_type enum
                 raw_type = raw.get("event_type", "OTHER")
