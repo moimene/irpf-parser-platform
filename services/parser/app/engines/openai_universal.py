@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Set
 from openai import AsyncOpenAI
 
 from app.extractors.base import validate_isin_luhn
+from app.services.exchange_rates import bce_rates
 from app.schemas.m720_boe_v2 import (
     CoverageWarning,
     ExtractionCoverage,
@@ -1274,6 +1275,126 @@ def merge_extractions(
         iics=final_iics,
         seguros=final_seguros,
         inmuebles=final_inmuebles,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Post-procesador: Aplicar tipos de cambio BCE
+# ─────────────────────────────────────────────────────────────────────
+
+
+def apply_exchange_rates(
+    extraction: M720DocumentExtraction, ejercicio: int
+) -> M720DocumentExtraction:
+    """
+    Aplica tipos de cambio BCE al 31/dic del ejercicio a todos los activos.
+
+    Para cada activo: lee moneda_original, obtiene TC del BCE, calcula
+    los campos *_euros correspondientes. No modifica campos en moneda original.
+
+    Retorna una copia del extraction con los campos EUR rellenados.
+    """
+    # ── Cuentas ──
+    updated_cuentas = []
+    for cuenta in extraction.cuentas:
+        tc = bce_rates.get_rate(ejercicio, cuenta.moneda_original)
+        updates: dict = {
+            "tipo_cambio_aplicado": tc,
+            "ejercicio_tc": ejercicio if tc is not None else None,
+        }
+        if tc is not None:
+            if cuenta.saldo_31_diciembre is not None:
+                updates["saldo_31_diciembre_euros"] = round(
+                    cuenta.saldo_31_diciembre / tc, 2
+                )
+            if cuenta.saldo_medio_4T is not None:
+                updates["saldo_medio_4T_euros"] = round(
+                    cuenta.saldo_medio_4T / tc, 2
+                )
+        updated_cuentas.append(cuenta.model_copy(update=updates))
+
+    # ── Valores ──
+    updated_valores = []
+    for valor in extraction.valores:
+        tc = bce_rates.get_rate(ejercicio, valor.moneda_original)
+        updates = {
+            "tipo_cambio_aplicado": tc,
+            "ejercicio_tc": ejercicio if tc is not None else None,
+        }
+        if tc is not None:
+            if valor.saldo_31_diciembre is not None:
+                updates["saldo_31_diciembre_euros"] = round(
+                    valor.saldo_31_diciembre / tc, 2
+                )
+            if valor.valor_adquisicion is not None:
+                updates["valor_adquisicion_euros"] = round(
+                    valor.valor_adquisicion / tc, 2
+                )
+        updated_valores.append(valor.model_copy(update=updates))
+
+    # ── IICs ──
+    updated_iics = []
+    for iic in extraction.iics:
+        tc = bce_rates.get_rate(ejercicio, iic.moneda_original)
+        updates = {
+            "tipo_cambio_aplicado": tc,
+            "ejercicio_tc": ejercicio if tc is not None else None,
+        }
+        if tc is not None:
+            if iic.valor_liquidativo_31_diciembre is not None:
+                updates["valor_liquidativo_31_diciembre_euros"] = round(
+                    iic.valor_liquidativo_31_diciembre / tc, 2
+                )
+            if iic.valor_adquisicion is not None:
+                updates["valor_adquisicion_euros"] = round(
+                    iic.valor_adquisicion / tc, 2
+                )
+        updated_iics.append(iic.model_copy(update=updates))
+
+    # ── Seguros ──
+    updated_seguros = []
+    for seguro in extraction.seguros:
+        tc = bce_rates.get_rate(ejercicio, seguro.moneda_original)
+        updates = {
+            "tipo_cambio_aplicado": tc,
+            "ejercicio_tc": ejercicio if tc is not None else None,
+        }
+        if tc is not None:
+            if seguro.valor_rescate_capitalizacion_31_diciembre is not None:
+                updates["valor_rescate_capitalizacion_31_diciembre_euros"] = round(
+                    seguro.valor_rescate_capitalizacion_31_diciembre / tc, 2
+                )
+            if seguro.prima_pagada is not None:
+                updates["prima_pagada_euros"] = round(
+                    seguro.prima_pagada / tc, 2
+                )
+        updated_seguros.append(seguro.model_copy(update=updates))
+
+    # ── Inmuebles ──
+    updated_inmuebles = []
+    for inmueble in extraction.inmuebles:
+        tc = bce_rates.get_rate(ejercicio, inmueble.moneda_original)
+        updates = {
+            "tipo_cambio_aplicado": tc,
+            "ejercicio_tc": ejercicio if tc is not None else None,
+        }
+        if tc is not None:
+            if inmueble.valor_adquisicion is not None:
+                updates["valor_adquisicion_euros"] = round(
+                    inmueble.valor_adquisicion / tc, 2
+                )
+            if inmueble.valor_transmision is not None:
+                updates["valor_transmision_euros"] = round(
+                    inmueble.valor_transmision / tc, 2
+                )
+        updated_inmuebles.append(inmueble.model_copy(update=updates))
+
+    return M720DocumentExtraction(
+        cuentas=updated_cuentas,
+        valores=updated_valores,
+        iics=updated_iics,
+        seguros=updated_seguros,
+        inmuebles=updated_inmuebles,
     )
 
 

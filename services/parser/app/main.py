@@ -40,7 +40,7 @@ from app.schemas.m720_boe_v2 import (
     ExtractionCoverage,
     M720DocumentExtraction,
 )
-from app.engines.openai_universal import extract_m720_openai, openai_engine
+from app.engines.openai_universal import apply_exchange_rates, extract_m720_openai, openai_engine
 from app.exporters.excel_m720_v2 import export_to_excel
 
 app = FastAPI(
@@ -274,6 +274,9 @@ async def parse_universal_v2(request: ParseUniversalV2Request) -> ParseUniversal
             docling_backend=backend,
             warnings=[f"Error en extracción OpenAI: {e}"],
         )
+
+    # ── 4b. Aplicar tipos de cambio BCE ──
+    extraction = apply_exchange_rates(extraction, request.ejercicio)
 
     elapsed = time.time() - t0
     total_assets = (
