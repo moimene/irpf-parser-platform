@@ -262,6 +262,25 @@ class BaseM720Asset(BaseModel):
         ),
     )
 
+    # ── Campos de conversión EUR (calculados en post-proceso, NO por OpenAI) ──
+
+    tipo_cambio_aplicado: Optional[float] = Field(
+        default=None,
+        description=(
+            "Tipo de cambio BCE aplicado para convertir a EUR. "
+            "Ej: 1.0389 para USD/EUR al 31 DIC 2024. "
+            "1.0 para activos ya en EUR. None si no se ha aplicado conversión."
+        ),
+    )
+
+    ejercicio_tc: Optional[int] = Field(
+        default=None,
+        description=(
+            "Ejercicio fiscal cuyo tipo de cambio al 31 de diciembre se usó "
+            "para la conversión a EUR."
+        ),
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Clave C — Cuentas en entidades financieras
@@ -381,6 +400,24 @@ class M720Cuenta(BaseM720Asset):
             "Saldo medio del último trimestre (octubre-diciembre) en "
             "la moneda original. Si el documento no lo indica, dejar null. "
             "Algunos extractos lo calculan como media de saldos diarios."
+        ),
+    )
+
+    # ── EUR post-proceso ──
+
+    saldo_31_diciembre_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Saldo a 31 de diciembre convertido a EUR usando el tipo de cambio "
+            "BCE al 31/dic del ejercicio fiscal. Calculado en post-proceso."
+        ),
+    )
+
+    saldo_medio_4T_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Saldo medio del último trimestre convertido a EUR usando el tipo "
+            "de cambio BCE al 31/dic del ejercicio fiscal. Calculado en post-proceso."
         ),
     )
 
@@ -504,6 +541,31 @@ class M720Valor(BaseM720Asset):
         ),
     )
 
+    valor_adquisicion: Optional[float] = Field(
+        default=None,
+        description=(
+            "Coste/precio de adquisición del valor en la MONEDA ORIGINAL. "
+            "Para Modelo 714. Buscar en columnas 'Cost', 'Purchase Price', "
+            "'Book Value', 'Einstandskurs'. Dejar null si no aparece."
+        ),
+    )
+
+    # ── EUR post-proceso ──
+
+    saldo_31_diciembre_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Valor de mercado a 31/dic convertido a EUR. Calculado en post-proceso."
+        ),
+    )
+
+    valor_adquisicion_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Coste de adquisición convertido a EUR. Calculado en post-proceso."
+        ),
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Clave I — Acciones/participaciones en IICs (fondos de inversión)
@@ -587,6 +649,31 @@ class M720IIC(BaseM720Asset):
         ),
     )
 
+    valor_adquisicion: Optional[float] = Field(
+        default=None,
+        description=(
+            "Coste/precio de adquisición del fondo en la MONEDA ORIGINAL. "
+            "Para Modelo 714. Buscar en columnas 'Cost', 'Purchase Price', "
+            "'Book Value'. Dejar null si no aparece."
+        ),
+    )
+
+    # ── EUR post-proceso ──
+
+    valor_liquidativo_31_diciembre_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Valor de la posición a 31/dic convertido a EUR. Calculado en post-proceso."
+        ),
+    )
+
+    valor_adquisicion_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Coste de adquisición convertido a EUR. Calculado en post-proceso."
+        ),
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Clave S — Seguros de vida e invalidez
@@ -659,6 +746,31 @@ class M720Seguro(BaseM720Asset):
             "Para unit-linked: valor de las participaciones subyacentes. "
             "Para seguros mixtos: provisión matemática. "
             "Columnas: 'Surrender Value', 'Cash Value', 'Valor rescate'."
+        ),
+    )
+
+    prima_pagada: Optional[float] = Field(
+        default=None,
+        description=(
+            "Prima total acumulada pagada en la MONEDA ORIGINAL de la póliza. "
+            "Para Modelo 714. Buscar en 'Premium Paid', 'Prima pagada', "
+            "'Cumulative Premium'. Dejar null si no aparece."
+        ),
+    )
+
+    # ── EUR post-proceso ──
+
+    valor_rescate_capitalizacion_31_diciembre_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Valor de rescate a 31/dic convertido a EUR. Calculado en post-proceso."
+        ),
+    )
+
+    prima_pagada_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Prima pagada convertida a EUR. Calculado en post-proceso."
         ),
     )
 
@@ -764,6 +876,22 @@ class M720Inmueble(BaseM720Asset):
             "Clasificación urbanística del inmueble. "
             "'U' = urbano (viviendas, locales, garajes en zona urbana). "
             "'R' = rústico (fincas, terrenos agrícolas)."
+        ),
+    )
+
+    # ── EUR post-proceso ──
+
+    valor_adquisicion_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Precio de compra convertido a EUR. Calculado en post-proceso."
+        ),
+    )
+
+    valor_transmision_euros: Optional[float] = Field(
+        default=None,
+        description=(
+            "Precio de venta convertido a EUR, si aplica. Calculado en post-proceso."
         ),
     )
 
