@@ -170,3 +170,104 @@ class TestApplyExchangeRates:
         valor = result.valores[0]
         assert valor.saldo_31_diciembre_euros is not None
         assert valor.valor_adquisicion_euros is None
+
+
+class TestFindIsinsLuhnFilter:
+    """Tests for _find_isins_in_text with Luhn validation."""
+
+    def test_valid_isin_accepted(self):
+        """Known valid ISINs pass Luhn."""
+        from app.engines.openai_universal import OpenAIUniversalEngine
+        # IE00B3RBWM25 = iShares MSCI ACWI ETF (valid ISIN)
+        text = "Position: IE00B3RBWM25 iShares MSCI ACWI"
+        isins = OpenAIUniversalEngine._find_isins_in_text(text)
+        assert "IE00B3RBWM25" in isins
+
+    def test_ch_iban_rejected(self):
+        """Swiss IBAN fragments rejected by Luhn."""
+        from app.engines.openai_universal import OpenAIUniversalEngine
+        # CH0508667005604841315 — IBAN, first 12 chars match ISIN regex
+        text = "Account: CH0508667005604841315 EFG Bank"
+        isins = OpenAIUniversalEngine._find_isins_in_text(text)
+        # Should NOT contain the first 12 chars of the IBAN
+        assert len(isins) == 0
+
+    def test_mixed_isin_and_iban(self):
+        """Text with both valid ISINs and IBANs — only ISINs returned."""
+        from app.engines.openai_universal import OpenAIUniversalEngine
+        text = (
+            "ISIN: IE00B3RBWM25 iShares\n"
+            "Account: CH0508667005604841315\n"
+            "ISIN: LU0290358497 Xtrackers\n"
+        )
+        isins = OpenAIUniversalEngine._find_isins_in_text(text)
+        assert "IE00B3RBWM25" in isins
+        assert "LU0290358497" in isins
+        assert len(isins) == 2
+
+    def test_empty_text(self):
+        """Empty text returns empty set."""
+        from app.engines.openai_universal import OpenAIUniversalEngine
+        assert OpenAIUniversalEngine._find_isins_in_text("") == set()
+
+
+class TestZeroBalancePassthrough:
+    """Zero-value assets must NOT be filtered by Aduana."""
+
+    def test_zero_valor_passes_through(self):
+        """Valor with saldo=0 and units=0 must survive merge."""
+        from app.engines.openai_universal import merge_extractions
+
+        extraction = M720DocumentExtraction(
+            valores=[
+                M720Valor(
+                    pais_entidad_o_inmueble="US",
+                    moneda_original="USD",
+                    identificacion_valores="US0378331005",  # Apple ISIN
+                    denominacion_entidad_emisora="Apple Inc",
+                    saldo_31_diciembre=0.0,
+                    numero_valores=0.0,
+                )
+            ]
+        )
+        result = merge_extractions([extraction])
+        assert len(result.valores) == 1
+        assert result.valores[0].saldo_31_diciembre == 0.0
+
+    def test_zero_iic_passes_through(self):
+        """IIC with valor=0 and units=0 must survive merge."""
+        from app.engines.openai_universal import merge_extractions
+
+        extraction = M720DocumentExtraction(
+            iics=[
+                M720IIC(
+                    pais_entidad_o_inmueble="LU",
+                    moneda_original="EUR",
+                    identificacion_valores="LU0290358497",
+                    denominacion_entidad_gestora="Xtrackers SICAV",
+                    valor_liquidativo_31_diciembre=0.0,
+                    numero_valores=0.0,
+                )
+            ]
+        )
+        result = merge_extractions([extraction])
+        assert len(result.iics) == 1
+        assert result.iics[0].valor_liquidativo_31_diciembre == 0.0
+
+    def test_zero_valor_no_isin_passes_through(self):
+        """Even without ISIN, zero-value asset passes through."""
+        from app.engines.openai_universal import merge_extractions
+
+        extraction = M720DocumentExtraction(
+            valores=[
+                M720Valor(
+                    pais_entidad_o_inmueble="CH",
+                    moneda_original="CHF",
+                    denominacion_entidad_emisora="Some Expired Warrant",
+                    saldo_31_diciembre=0.0,
+                    numero_valores=0.0,
+                )
+            ]
+        )
+        result = merge_extractions([extraction])
+        assert len(result.valores) == 1

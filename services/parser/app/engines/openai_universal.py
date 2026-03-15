@@ -166,7 +166,24 @@ REGLAS DE EXTRACCIÓN:
     Esto es habitual cuando el cliente tiene múltiples lotes comprados \
     en distintas fechas o a distintos precios. NO sumar ni promediar \
     — extraer cada fila tal cual. La deduplicación y agregación se \
-    realizará en post-procesado automático."""
+    realizará en post-procesado automático.
+
+18. SALDO MEDIO ÚLTIMO TRIMESTRE: para cuentas bancarias (Clave C), \
+    extraer también el saldo medio del último trimestre (octubre-diciembre) \
+    si aparece en el extracto. Buscar en campos como "Average Balance Q4", \
+    "Saldo medio 4T", "Mean balance Oct-Dec", "Durchschnittssaldo", \
+    "Saldo medio último trimestre". Si no aparece, dejar null.
+
+19. VALOR/COSTE DE ADQUISICIÓN: para valores (V) e IICs (I), extraer \
+    también el coste/precio de adquisición si aparece en el extracto. \
+    Buscar en campos como "Cost", "Purchase Price", "Acquisition Value", \
+    "Precio compra", "Book Value", "Einstandskurs", "Anschaffungswert". \
+    Si no aparece, dejar null. Este dato es necesario para el Modelo 714.
+
+20. PRIMAS DE SEGUROS: para seguros (S), extraer la prima total pagada \
+    acumulada si aparece. Buscar "Premium Paid", "Prima pagada", \
+    "Cumulative Premium", "Total Premiums". Si no aparece, dejar null. \
+    Este dato es necesario para el Modelo 714."""
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -268,8 +285,13 @@ class OpenAIUniversalEngine:
 
     @staticmethod
     def _find_isins_in_text(text: str) -> Set[str]:
-        """Encuentra todos los ISINs en un texto usando regex."""
-        return set(re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", text))
+        """Encuentra ISINs válidos (pasan Luhn ISO 6166) en texto.
+
+        Filtra account numbers (IBANs CH, etc.) que coinciden con el patrón
+        regex de 12 chars pero NO pasan la validación Luhn de ISIN.
+        """
+        candidates = set(re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", text))
+        return {c for c in candidates if validate_isin_luhn(c)}
 
     @staticmethod
     def _extracted_isins(result: M720DocumentExtraction) -> Set[str]:
@@ -407,6 +429,7 @@ class OpenAIUniversalEngine:
         missing_isins: Set[str],
         *,
         timeout: float = 120.0,
+        context_chars: int = 500,
     ) -> Optional[M720DocumentExtraction]:
         """
         Verification pass: consulta focalizada sobre ISINs que GPT-4o omitió.
@@ -423,8 +446,8 @@ class OpenAIUniversalEngine:
         for isin in sorted(missing_isins):
             pos = markdown_chunk.find(isin)
             if pos >= 0:
-                start = max(0, pos - 500)
-                end = min(len(markdown_chunk), pos + 500)
+                start = max(0, pos - context_chars)
+                end = min(len(markdown_chunk), pos + context_chars)
                 ctx = markdown_chunk[start:end]
                 isin_contexts.append(
                     f"--- Contexto del ISIN {isin} ---\n{ctx}\n"
@@ -630,63 +653,39 @@ class OpenAIUniversalEngine:
             len(chunks),
         )
 
-        # ── VERIFICATION PASS: rescatar ISINs omitidos ──
-        rescue_tasks: List[tuple[int, Set[str], asyncio.Task]] = []  # type: ignore[type-arg]
-        rescue_meta: List[tuple[int, Set[str]]] = []  # (bloque, missing_isins)
-        rescue_coros = []
+        # ── VERIFICATION PASS: global rescue for missing ISINs ──
+        # Collect ALL extracted ISINs from first pass
+        first_pass_isins: Set[str] = set()
+        for vr in valid_results:
+            first_pass_isins.update(self._extracted_isins(vr))
 
-        for i, chunk in enumerate(chunks):
-            if i >= len(results) or isinstance(results[i], Exception):
-                continue
-            result = results[i]
-            if result is None:
-                continue
-
-            chunk_isins = self._find_isins_in_text(chunk)
-            extracted_isins = self._extracted_isins(result)
-            missing = chunk_isins - extracted_isins
-
-            if missing:
-                logger.info(
-                    "VERIFY bloque %d: %d ISINs en texto, %d extraídos, "
-                    "%d FALTANTES: %s",
-                    i + 1,
-                    len(chunk_isins),
-                    len(extracted_isins),
-                    len(missing),
-                    ", ".join(sorted(missing)),
-                )
-                rescue_meta.append((i + 1, missing))
-                rescue_coros.append(
-                    self._rescue_missing_isins(chunk, missing)
-                )
-
+        globally_missing = all_ocr_isins - first_pass_isins
         rescued_isins: Set[str] = set()
-        if rescue_coros:
+
+        if globally_missing:
             logger.info(
-                "Lanzando %d rescue passes para ISINs faltantes...",
-                len(rescue_coros),
+                "GLOBAL RESCUE: %d ISINs missing after first pass: %s",
+                len(globally_missing),
+                ", ".join(sorted(globally_missing)),
             )
-            rescue_results = await asyncio.gather(
-                *rescue_coros, return_exceptions=True
-            )
-            for idx, rr in enumerate(rescue_results):
-                bloque_num, missing_set = rescue_meta[idx]
-                if isinstance(rr, Exception):
-                    logger.warning("Rescue pass falló (bloque %d): %s", bloque_num, rr)
-                    coverage_warnings.append(CoverageWarning(
-                        tipo="rescue_fallido",
-                        severidad="alta",
-                        bloque=bloque_num,
-                        mensaje=(
-                            f"El rescue pass para el bloque {bloque_num} falló: {rr}. "
-                            f"ISINs afectados: {', '.join(sorted(missing_set))}"
-                        ),
-                    ))
-                elif rr is not None:
-                    valid_results.append(rr)
-                    # Track which ISINs were actually rescued
-                    rescued_isins.update(self._extracted_isins(rr))
+            # Single rescue call with full-document context (±1000 chars per ISIN)
+            try:
+                rescue_result = await self._rescue_missing_isins(
+                    full_markdown, globally_missing, context_chars=1000
+                )
+                if rescue_result is not None:
+                    valid_results.append(rescue_result)
+                    rescued_isins.update(self._extracted_isins(rescue_result))
+            except Exception as e:
+                logger.warning("Global rescue failed: %s", e)
+                coverage_warnings.append(CoverageWarning(
+                    tipo="rescue_fallido",
+                    severidad="alta",
+                    mensaje=(
+                        f"Global rescue pass failed: {e}. "
+                        f"ISINs affected: {', '.join(sorted(globally_missing))}"
+                    ),
+                ))
 
         # ── COVERAGE ANALYSIS: identificar ISINs aún no recuperados ──
         # Recopilar todos los ISINs extraídos (primera pasada + rescue)
@@ -1066,17 +1065,6 @@ def merge_extractions(
     # ── Valores (Clave V) ──
     for chunk in chunks:
         for valor in chunk.valores:
-            # Filtro de activos extinguidos: saldo=0 Y unidades=0
-            if (valor.saldo_31_diciembre or 0.0) == 0.0 and \
-               (valor.numero_valores is None or (valor.numero_valores or 0.0) == 0.0):
-                stats["aggregation_filtered"] += 1
-                logger.debug(
-                    "Zero-balance extinguido filtrado: %s %s",
-                    valor.identificacion_valores or "",
-                    valor.denominacion_entidad_emisora or "",
-                )
-                continue
-
             name = valor.denominacion_entidad_emisora or ""
             if _is_aggregation_entry(name):
                 stats["aggregation_filtered"] += 1
@@ -1153,17 +1141,6 @@ def merge_extractions(
     # ── IICs (Clave I) — misma lógica que Valores ──
     for chunk in chunks:
         for iic in chunk.iics:
-            # Filtro de activos extinguidos: valor=0 Y unidades=0
-            if (iic.valor_liquidativo_31_diciembre or 0.0) == 0.0 and \
-               (iic.numero_valores is None or (iic.numero_valores or 0.0) == 0.0):
-                stats["aggregation_filtered"] += 1
-                logger.debug(
-                    "Zero-balance IIC extinguido filtrado: %s %s",
-                    iic.identificacion_valores or "",
-                    iic.denominacion_entidad_gestora or "",
-                )
-                continue
-
             name = iic.denominacion_entidad_gestora or ""
             if _is_aggregation_entry(name):
                 stats["aggregation_filtered"] += 1

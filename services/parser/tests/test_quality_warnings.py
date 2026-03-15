@@ -117,7 +117,8 @@ def test_fix_encoding_handles_empty_string():
     assert _fix_encoding("") == ""
 
 
-def test_merge_filters_zero_balance_zero_units_valor():
+def test_merge_keeps_zero_balance_zero_units_valor():
+    """Zero-balance assets pass through — human decides, not the engine."""
     extraction = M720DocumentExtraction(
         valores=[
             M720Valor(
@@ -140,7 +141,7 @@ def test_merge_filters_zero_balance_zero_units_valor():
     )
     merged = merge_extractions([extraction])
     names = [v.denominacion_entidad_emisora for v in merged.valores]
-    assert "SHELL PLC RTS" not in names
+    assert "SHELL PLC RTS" in names  # Zero-balance now passes through
     assert "APPLE INC" in names
 
 
