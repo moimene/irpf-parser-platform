@@ -429,7 +429,7 @@ class OpenAIUniversalEngine:
         missing_isins: Set[str],
         *,
         timeout: float = 120.0,
-        context_chars: int = 500,
+        context_chars: int = 1000,
     ) -> Optional[M720DocumentExtraction]:
         """
         Verification pass: consulta focalizada sobre ISINs que GPT-4o omitió.
@@ -734,7 +734,7 @@ class OpenAIUniversalEngine:
             bloques_total=len(chunks),
             bloques_exitosos=len(chunks) - bloques_fallidos,
             bloques_fallidos=bloques_fallidos,
-            rescue_passes=len(rescue_coros),
+            rescue_passes=1 if globally_missing else 0,
             cobertura_isin_pct=round(cobertura_pct, 1),
             warnings=coverage_warnings,
         )

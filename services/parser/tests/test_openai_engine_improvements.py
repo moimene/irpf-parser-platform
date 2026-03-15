@@ -8,7 +8,6 @@ from app.schemas.m720_boe_v2 import (
     M720Valor,
     M720Seguro,
     M720Inmueble,
-    DireccionEntidad,
 )
 
 
