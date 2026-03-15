@@ -201,6 +201,35 @@ async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
             estimated_rows=int(s.get("estimated_rows", 0)),
         ))
 
+    # PDF fallback: if no sheets and no patrimonio section exists, create default sections
+    # so extractors have something to process against the PDF markdown content
+    is_pdf = _looks_like_unstructured_pdf(request.filename)
+    if is_pdf and not sheet_names:
+        has_patrimonio = any(s.extraction_pass == ExtractionPass.patrimonio for s in sections)
+        has_rentas = any(s.extraction_pass == ExtractionPass.rentas for s in sections)
+        if not has_patrimonio:
+            sections.append(PlannedSection(
+                section_id=f"sec_{len(sections):02d}",
+                label="PDF Positions",
+                source="pdf_full",
+                extraction_pass=ExtractionPass.patrimonio,
+                section_type=SectionType.POSITIONS,
+                reason="Default patrimonio section for PDF (no sheets available)",
+                chunk_strategy=ChunkStrategy.full,
+                estimated_rows=0,
+            ))
+        if not has_rentas:
+            sections.append(PlannedSection(
+                section_id=f"sec_{len(sections):02d}",
+                label="PDF Transactions",
+                source="pdf_full",
+                extraction_pass=ExtractionPass.rentas,
+                section_type=SectionType.TRANSACTIONS,
+                reason="Default rentas section for PDF (no sheets available)",
+                chunk_strategy=ChunkStrategy.full,
+                estimated_rows=0,
+            ))
+
     doc_type_str = data.get("doc_type", "unknown")
     try:
         doc_type = DocType(doc_type_str)

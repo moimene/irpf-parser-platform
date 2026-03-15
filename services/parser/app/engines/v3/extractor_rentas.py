@@ -30,6 +30,7 @@ from app.schemas.canonical_v2 import (
     CanonicalStatus,
 )
 from app.engines.v3.aduana_v2 import dedup_income_events
+from app.engines.v3.extractor_patrimonio import _chunk_section_text
 
 _openai_client: AsyncOpenAI | None = None
 _CHUNK_SIZE = 20_000
