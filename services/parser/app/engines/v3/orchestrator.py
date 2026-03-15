@@ -41,7 +41,10 @@ def _safe_enum(enum_cls: type, value: object, default: str) -> Any:
 def _get_openai() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
+        _openai_client = AsyncOpenAI(api_key=api_key, timeout=120.0)
     return _openai_client
 
 
@@ -148,11 +151,49 @@ async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
 
     # Normalize sections
     sections: list[PlannedSection] = []
-    for i, s in enumerate(data.get("sections", [])):
+    raw_sections = data.get("sections", [])
+
+    # If AI returned fewer sections than sheets, build sections from sheet_metas
+    sheet_names = [m.name for m in request.sheet_metas] if request.sheet_metas else []
+    if sheet_names and len(raw_sections) < len(sheet_names):
+        # AI didn't enumerate sheets properly — build one section per sheet
+        raw_sections = []
+        for i, sname in enumerate(sheet_names):
+            name_lower = sname.lower()
+            # Heuristic: match section type by sheet name keywords
+            if any(kw in name_lower for kw in ("inventario", "posicion", "cartera", "portfolio", "balance", "saldo")):
+                pass_type = "patrimonio"
+                sec_type = "POSITIONS"
+            elif any(kw in name_lower for kw in ("movimiento", "transac", "dividendo", "renta", "operacion", "venta", "compra")):
+                pass_type = "rentas"
+                sec_type = "TRANSACTIONS"
+            elif any(kw in name_lower for kw in ("resumen", "summary", "total", "irpf")):
+                pass_type = "skip"
+                sec_type = "SUMMARY"
+            else:
+                pass_type = "patrimonio"
+                sec_type = "POSITIONS"
+            raw_sections.append({
+                "section_id": f"sec_{i:02d}",
+                "label": sname,
+                "source": sname,
+                "extraction_pass": pass_type,
+                "section_type": sec_type,
+                "reason": f"Auto-classified from sheet name '{sname}'",
+                "chunk_strategy": "full",
+                "estimated_rows": (request.sheet_metas[i].row_count if request.sheet_metas else 0),
+            })
+
+    for i, s in enumerate(raw_sections):
+        # Resolve source: prefer AI's value, then match to a known sheet name, then "unknown"
+        source = s.get("source") or "unknown"
+        if source == "unknown" and i < len(sheet_names):
+            source = sheet_names[i]
+
         sections.append(PlannedSection(
             section_id=s.get("section_id", f"sec_{i:02d}"),
             label=s.get("label", f"Section {i}"),
-            source=s.get("source", "unknown"),
+            source=source,
             extraction_pass=_safe_enum(ExtractionPass, s.get("extraction_pass", "skip"), "skip"),
             section_type=_safe_enum(SectionType, s.get("section_type", "UNKNOWN"), "UNKNOWN"),
             reason=s.get("reason", ""),
@@ -173,8 +214,8 @@ async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
         custodian_bic=data.get("custodian_bic"),
         client_nif=data.get("client_nif"),
         ejercicio=request.ejercicio,
-        reference_date=data.get("reference_date", f"{request.ejercicio}-12-31"),
-        base_currency=data.get("base_currency", "EUR"),
+        reference_date=data.get("reference_date") or f"{request.ejercicio}-12-31",
+        base_currency=data.get("base_currency") or "EUR",
         sections=sections,
         estimated_chunks=int(data.get("estimated_chunks", len(sections))),
         estimated_instruments=int(data.get("estimated_instruments", 0)),

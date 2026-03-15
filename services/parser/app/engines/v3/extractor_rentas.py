@@ -40,7 +40,10 @@ _DATE_COL_KEYWORDS = ("fecha", "date", "datum", "data", "date de")
 def _get_openai() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
+        _openai_client = AsyncOpenAI(api_key=api_key, timeout=120.0)
     return _openai_client
 
 
@@ -178,13 +181,23 @@ async def extract_rentas(request: ExtractRentasRequest) -> CanonicalExtraction:
         for sheet in request.sheets:
             rows_source[sheet["name"]] = sheet["rows"]
 
+    # For PDFs: convert base64 to markdown once
+    pdf_markdown: str | None = None
+    if not rows_source and request.content_base64:
+        import base64
+        from app.docling_converter import convert_document
+        content_bytes = base64.b64decode(request.content_base64)
+        pdf_markdown, _t, _p, _b, _w = convert_document(content_bytes, "document.pdf")
+
     # Build chunk tasks
     chunk_tasks: list[tuple[PlannedSection, list[str], list[list[str]], str]] = []
     for sec in rentas_sections:
         sheet_rows = rows_source.get(sec.source, [])
         if not sheet_rows:
-            if request.content_base64:
-                chunk_tasks.append((sec, [], [], f"{sec.section_id}_0"))
+            if pdf_markdown:
+                # Convert markdown to rows-like structure for the chunk extractor
+                pdf_lines = pdf_markdown.split("\n")
+                chunk_tasks.append((sec, [], [pdf_lines], f"{sec.section_id}_0"))
             continue
 
         date_chunks = _split_by_date_range(sheet_rows)

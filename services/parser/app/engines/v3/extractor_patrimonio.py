@@ -42,7 +42,10 @@ _SEMAPHORE_LIMIT = 3    # max concurrent OpenAI calls
 def _get_openai() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
+        _openai_client = AsyncOpenAI(api_key=api_key, timeout=120.0)
     return _openai_client
 
 
@@ -70,6 +73,41 @@ def _chunk_section(rows: list[list[str]], chunk_size: int = _CHUNK_SIZE) -> list
     if current_lines:
         chunks.append("\n".join(current_lines))
 
+    return chunks
+
+
+def _chunk_section_text(text: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:
+    """Split markdown text into chunks, breaking at page separators or paragraphs."""
+    if len(text) <= chunk_size:
+        return [text] if text.strip() else []
+
+    # Try splitting by page separator first
+    pages = text.split("\n---\n")
+    if len(pages) > 1:
+        chunks: list[str] = []
+        current = ""
+        for page in pages:
+            if len(current) + len(page) + 5 > chunk_size and current:
+                chunks.append(current)
+                current = page
+            else:
+                current = current + "\n---\n" + page if current else page
+        if current.strip():
+            chunks.append(current)
+        return chunks
+
+    # Fallback: split by paragraphs
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 > chunk_size and current:
+            chunks.append(current)
+            current = para
+        else:
+            current = current + "\n\n" + para if current else para
+    if current.strip():
+        chunks.append(current)
     return chunks
 
 
@@ -124,6 +162,18 @@ async def _extract_chunk(
             return chunk_id, None
 
 
+async def _pdf_to_markdown(content_base64: str) -> str:
+    """Convert base64-encoded PDF to markdown text using Docling/pdfplumber."""
+    import base64
+    from app.docling_converter import convert_document
+
+    content_bytes = base64.b64decode(content_base64)
+    markdown, _tables, _pages, _backend, _warnings = convert_document(
+        content_bytes, "document.pdf"
+    )
+    return markdown
+
+
 async def extract_patrimonio(request: ExtractPatrimonioRequest) -> CanonicalExtraction:
     """
     Run Pass 1 (patrimonio) extraction.
@@ -153,11 +203,18 @@ async def extract_patrimonio(request: ExtractPatrimonioRequest) -> CanonicalExtr
         for sheet in request.sheets:
             rows_source[sheet["name"]] = sheet["rows"]
 
+    # For PDFs: convert base64 to markdown once, then chunk it
+    pdf_markdown: str | None = None
+    if not rows_source and request.content_base64:
+        pdf_markdown = await _pdf_to_markdown(request.content_base64)
+
     for sec in patrimonio_sections:
         sheet_rows = rows_source.get(sec.source, [])
-        if not sheet_rows and request.content_base64:
-            # PDF: treat entire content as one chunk
-            chunk_tasks.append((sec, f"[PDF section: {sec.label}]", f"{sec.section_id}_0"))
+        if not sheet_rows and pdf_markdown:
+            # PDF: chunk the markdown text
+            pdf_chunks = _chunk_section_text(pdf_markdown)
+            for i, chunk_text in enumerate(pdf_chunks):
+                chunk_tasks.append((sec, chunk_text, f"{sec.section_id}_{i}"))
             continue
         chunks = _chunk_section(sheet_rows)
         for i, chunk_text in enumerate(chunks):
