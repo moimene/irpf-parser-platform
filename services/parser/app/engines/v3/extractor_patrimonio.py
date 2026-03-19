@@ -17,6 +17,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.services.model_policy import get_model_for_role
 from app.schemas.canonical_v2 import (
     CanonicalExtraction,
     ExtractionCoverage,
@@ -147,14 +148,14 @@ async def _extract_chunk(
         try:
             client = _get_openai()
             response = await client.chat.completions.create(
-                model="gpt-4o",
+                model=get_model_for_role("patrimonio"),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.0,
-                max_tokens=4000,
+                max_tokens=16000,
             )
             raw = response.choices[0].message.content or "{}"
             return chunk_id, json.loads(raw)
@@ -172,6 +173,62 @@ async def _pdf_to_markdown(content_base64: str) -> str:
         content_bytes, "document.pdf"
     )
     return markdown
+
+
+async def _extract_pdf_via_v2(
+    request: ExtractPatrimonioRequest,
+    start: float,
+    skipped_sections: list[PlannedSection],
+) -> CanonicalExtraction:
+    """
+    PDF extraction via V2 engine bridge.
+
+    Uses the proven V2 pipeline (Docling → OpenAI map-reduce → Aduana Matemática)
+    which achieves 64/64 on the EFG Bank benchmark, then maps the result to V3
+    canonical schema.
+    """
+    import base64
+    from app.docling_converter import convert_document
+    from app.engines.openai_universal import extract_m720_openai
+    from app.engines.v3.v2_bridge import map_v2_to_canonical
+
+    content_bytes = base64.b64decode(request.content_base64)
+    markdown, _tables, _pages, _backend, _warnings = convert_document(
+        content_bytes, "document.pdf"
+    )
+
+    if not markdown or not markdown.strip():
+        elapsed = time.monotonic() - start
+        return CanonicalExtraction(
+            doc_type=request.plan.doc_type,
+            custodian=request.plan.custodian,
+            reference_date=request.plan.reference_date,
+            ejercicio=request.ejercicio,
+            base_currency=request.plan.base_currency,
+            extraction_pass="patrimonio",
+            engine="openai_v2_bridge",
+            instruments=[], holdings=[], snapshots=[],
+            income_events=[], orphans=[], unscanned_sections=[],
+            coverage=ExtractionCoverage(
+                rows_found=0, rows_extracted=0, rows_orphaned=0, rows_skipped=0,
+            ),
+            warnings=["Docling returned empty markdown for PDF"],
+            chunk_count=0,
+            processing_time_seconds=round(elapsed, 2),
+        )
+
+    v2_extraction, _coverage = await extract_m720_openai(markdown)
+
+    elapsed = time.monotonic() - start
+    result = map_v2_to_canonical(
+        v2_extraction,
+        ejercicio=request.ejercicio,
+        custodian=request.plan.custodian,
+        reference_date=request.plan.reference_date,
+        base_currency=request.plan.base_currency,
+        processing_time=round(elapsed, 2),
+    )
+    return result
 
 
 async def extract_patrimonio(request: ExtractPatrimonioRequest) -> CanonicalExtraction:
@@ -203,16 +260,18 @@ async def extract_patrimonio(request: ExtractPatrimonioRequest) -> CanonicalExtr
         for sheet in request.sheets:
             rows_source[sheet["name"]] = sheet["rows"]
 
-    # For PDFs: convert base64 to markdown once, then chunk it
-    pdf_markdown: str | None = None
+    # For PDFs: use V2 engine bridge (proven map-reduce + Aduana pipeline)
     if not rows_source and request.content_base64:
-        pdf_markdown = await _pdf_to_markdown(request.content_base64)
+        return await _extract_pdf_via_v2(request, start, skipped_sections)
+
+    pdf_markdown: str | None = None
 
     for sec in patrimonio_sections:
         sheet_rows = rows_source.get(sec.source, [])
         if not sheet_rows and pdf_markdown:
-            # PDF: chunk the markdown text
-            pdf_chunks = _chunk_section_text(pdf_markdown)
+            # PDF: chunk the markdown text (smaller chunks than XLS to avoid
+            # hitting max_tokens on dense financial tables)
+            pdf_chunks = _chunk_section_text(pdf_markdown, chunk_size=8_000)
             for i, chunk_text in enumerate(pdf_chunks):
                 chunk_tasks.append((sec, chunk_text, f"{sec.section_id}_{i}"))
             continue

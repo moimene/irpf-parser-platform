@@ -16,6 +16,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.services.model_policy import get_model_for_role
 from app.schemas.canonical_v2 import (
     CanonicalExtraction,
     ExtractionCoverage,
@@ -142,14 +143,61 @@ async def _extract_rentas_chunk(
         try:
             client = _get_openai()
             response = await client.chat.completions.create(
-                model="gpt-4o",
+                model=get_model_for_role("rentas"),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.0,
-                max_tokens=4000,
+                max_tokens=16000,
+            )
+            raw = response.choices[0].message.content or "{}"
+            return chunk_id, json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return chunk_id, None
+
+
+async def _extract_rentas_text_chunk(
+    chunk_text: str,
+    chunk_id: str,
+    section: PlannedSection,
+    ejercicio: int,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, dict[str, Any] | None]:
+    """Extract income events from a markdown text chunk (PDF path)."""
+    system_prompt = (
+        "You are a financial income event extraction engine for the Spanish Modelo 720 / IRPF. "
+        "Extract ALL income events (dividends, interest, sales, purchases, redemptions, etc.) "
+        "from the document text. Return JSON with: income_events (array), orphans (array).\n\n"
+        "For each income_event: instrument_ref (ISIN/IBAN/account), event_type "
+        "(DIVIDEND|INTEREST|COUPON|CAPITAL_GAIN|SALE|PURCHASE|REDEMPTION|SUBSCRIPTION|"
+        "WITHHOLDING|LOAN_INTEREST|RENTAL_INCOME|OTHER), fecha (YYYY-MM-DD), importe (numeric), "
+        "moneda (3-letter ISO), importe_eur (optional numeric), retencion (optional numeric), "
+        "ejercicio (integer), canonical_status ('extracted' or 'needs_review').\n"
+        "Orphans: data you saw but couldn't classify.\n"
+        "Return ONLY valid JSON. No markdown."
+    )
+
+    user_prompt = (
+        f"Section: {section.label}\n"
+        f"Fiscal year: {ejercicio}\n"
+        f"Chunk ID: {chunk_id}\n\n"
+        f"{chunk_text}"
+    )
+
+    async with semaphore:
+        try:
+            client = _get_openai()
+            response = await client.chat.completions.create(
+                model=get_model_for_role("rentas"),
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+                max_tokens=16000,
             )
             raw = response.choices[0].message.content or "{}"
             return chunk_id, json.loads(raw)
@@ -190,27 +238,34 @@ async def extract_rentas(request: ExtractRentasRequest) -> CanonicalExtraction:
         content_bytes = base64.b64decode(request.content_base64)
         pdf_markdown, _t, _p, _b, _w = convert_document(content_bytes, "document.pdf")
 
-    # Build chunk tasks
-    chunk_tasks: list[tuple[PlannedSection, list[str], list[list[str]], str]] = []
+    # Build chunk tasks — two separate lists for row-based (XLS) and text-based (PDF)
+    row_chunk_tasks: list[tuple[PlannedSection, list[str], list[list[str]], str]] = []
+    text_chunk_tasks: list[tuple[PlannedSection, str, str]] = []
+
     for sec in rentas_sections:
         sheet_rows = rows_source.get(sec.source, [])
         if not sheet_rows:
             if pdf_markdown:
-                # Convert markdown to rows-like structure for the chunk extractor
-                pdf_lines = pdf_markdown.split("\n")
-                chunk_tasks.append((sec, [], [pdf_lines], f"{sec.section_id}_0"))
+                # PDF: chunk markdown text (smaller chunks for dense tables)
+                pdf_chunks = _chunk_section_text(pdf_markdown, chunk_size=8_000)
+                for i, chunk_text in enumerate(pdf_chunks):
+                    text_chunk_tasks.append((sec, chunk_text, f"{sec.section_id}_{i}"))
             continue
 
         date_chunks = _split_by_date_range(sheet_rows)
         for i, (header_rows, data_rows) in enumerate(date_chunks):
-            chunk_tasks.append((sec, header_rows, data_rows, f"{sec.section_id}_{i}"))
+            row_chunk_tasks.append((sec, header_rows, data_rows, f"{sec.section_id}_{i}"))
 
-    # Run all chunks in parallel
-    coroutines = [
+    # Run all chunks in parallel (row-based + text-based)
+    row_coroutines = [
         _extract_rentas_chunk(hdr, data, cid, sec, request.ejercicio, semaphore)
-        for sec, hdr, data, cid in chunk_tasks
+        for sec, hdr, data, cid in row_chunk_tasks
     ]
-    results = await asyncio.gather(*coroutines)
+    text_coroutines = [
+        _extract_rentas_text_chunk(ct, cid, sec, request.ejercicio, semaphore)
+        for sec, ct, cid in text_chunk_tasks
+    ]
+    results = await asyncio.gather(*row_coroutines, *text_coroutines)
 
     all_income_events: list[IncomeEventRecord] = []
     all_orphans: list[OrphanRecord] = []
@@ -283,7 +338,7 @@ async def extract_rentas(request: ExtractRentasRequest) -> CanonicalExtraction:
             rows_skipped=rows_found - rows_extracted - len(all_orphans),
         ),
         warnings=[f"Failed chunks: {failed_chunk_ids}"] if failed_chunk_ids else [],
-        chunk_count=len(chunk_tasks),
+        chunk_count=len(row_chunk_tasks) + len(text_chunk_tasks),
         partial_extraction=len(failed_chunk_ids) > 0,
         failed_chunk_ids=failed_chunk_ids,
         processing_time_seconds=round(elapsed, 2),

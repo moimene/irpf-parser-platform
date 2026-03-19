@@ -21,6 +21,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.services.model_policy import get_model_for_role
 from app.schemas.canonical_v2 import (
     CanonicalExtraction,
     ExtractionCoverage,
@@ -111,7 +112,7 @@ async def extract_legal(request: ExtractLegalRequest) -> CanonicalExtraction:
         try:
             client = _get_openai()
             response = await client.chat.completions.create(
-                model="gpt-4o",
+                model=get_model_for_role("legal"),
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},

@@ -32,6 +32,11 @@ from openai import AsyncOpenAI
 
 from app.extractors.base import validate_isin_luhn
 from app.services.exchange_rates import bce_rates
+from app.services.model_policy import (
+    get_model_for_role,
+    get_reasoning_loop_settings,
+)
+from app.services.reasoning_loop import build_retry_guidance
 from app.schemas.m720_boe_v2 import (
     CoverageWarning,
     ExtractionCoverage,
@@ -50,6 +55,8 @@ except ImportError:
     _HAS_FTFY = False
 
 logger = logging.getLogger(__name__)
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
+_AMOUNT_RE = re.compile(r"\b\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})\b")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -276,7 +283,8 @@ class OpenAIUniversalEngine:
 
     def __init__(self) -> None:
         self.api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o").strip()
+        self.model = get_model_for_role("structured_extraction")
+        self.loop_settings = get_reasoning_loop_settings()
 
     @property
     def is_available(self) -> bool:
@@ -305,12 +313,90 @@ class OpenAIUniversalEngine:
                 isins.add(i.identificacion_valores)
         return isins
 
-    async def _extract_chunk(
+    @staticmethod
+    def _count_assets(result: M720DocumentExtraction | None) -> int:
+        if result is None:
+            return 0
+        return (
+            len(result.cuentas)
+            + len(result.valores)
+            + len(result.iics)
+            + len(result.seguros)
+            + len(result.inmuebles)
+        )
+
+    @staticmethod
+    def _estimate_signal_count(markdown_chunk: str) -> int:
+        return (
+            len(OpenAIUniversalEngine._find_isins_in_text(markdown_chunk))
+            + len(_IBAN_RE.findall(markdown_chunk))
+            + min(10, len(_AMOUNT_RE.findall(markdown_chunk)))
+        )
+
+    def _should_run_chunk_critic(
+        self,
+        markdown_chunk: str,
+        result: M720DocumentExtraction | None,
+    ) -> bool:
+        if not self.loop_settings.enable_critic_pass:
+            return False
+        if self.loop_settings.max_retry_passes <= 0:
+            return False
+
+        signal_count = self._estimate_signal_count(markdown_chunk)
+        if signal_count < self.loop_settings.min_signal_threshold:
+            return False
+
+        chunk_isins = self._find_isins_in_text(markdown_chunk)
+        extracted_isins = self._extracted_isins(result) if result is not None else set()
+        missing_isins = chunk_isins - extracted_isins
+
+        if missing_isins:
+            return True
+        return self._count_assets(result) == 0 and signal_count >= self.loop_settings.min_signal_threshold
+
+    def _score_chunk_result(
+        self,
+        markdown_chunk: str,
+        result: M720DocumentExtraction | None,
+    ) -> int:
+        if result is None:
+            return 0
+
+        chunk_isins = self._find_isins_in_text(markdown_chunk)
+        extracted_isins = self._extracted_isins(result)
+        matched_isins = len(chunk_isins & extracted_isins)
+        return matched_isins * 25 + self._count_assets(result)
+
+    @staticmethod
+    def _build_chunk_user_message(
+        markdown_chunk: str,
+        retry_instructions: str | None = None,
+    ) -> str:
+        guidance = (
+            f"\n\nINSTRUCCIONES DE REINTENTO FOCALIZADO:\n{retry_instructions}"
+            if retry_instructions
+            else ""
+        )
+        return (
+            "Analiza el siguiente extracto bancario en Markdown y extrae "
+            "ABSOLUTAMENTE TODOS los activos declarables para el Modelo 720. "
+            "Es CRITICO que no omitas ninguna posicion: incluye cada fila de "
+            "cada tabla, incluyendo posiciones multi-lote. Presta especial "
+            "atencion a la moneda: usa la divisa de la seccion o tabla donde "
+            "aparece cada posicion, no la divisa de referencia de la cartera."
+            f"{guidance}\n\n"
+            "DOCUMENTO MARKDOWN:\n\n"
+            f"{markdown_chunk}"
+        )
+
+    async def _extract_chunk_once(
         self,
         markdown_chunk: str,
         *,
         timeout: float = 120.0,
         max_retries: int = 2,
+        retry_instructions: str | None = None,
     ) -> Optional[M720DocumentExtraction]:
         """
         Envía un chunk de Markdown a OpenAI y obtiene un
@@ -323,16 +409,9 @@ class OpenAIUniversalEngine:
 
         client = AsyncOpenAI(api_key=self.api_key)
 
-        user_message = (
-            "Analiza el siguiente extracto bancario en Markdown y extrae "
-            "ABSOLUTAMENTE TODOS los activos declarables para el Modelo 720. "
-            "Es CRÍTICO que no omitas ninguna posición — incluye CADA fila "
-            "de CADA tabla, incluyendo posiciones multi-lote (mismo ISIN, "
-            "distinto importe). Presta especial atención a la moneda: usa "
-            "la divisa de la sección/tabla donde aparece cada posición, "
-            "NO la divisa de referencia de la cartera.\n\n"
-            "DOCUMENTO MARKDOWN:\n\n"
-            f"{markdown_chunk}"
+        user_message = self._build_chunk_user_message(
+            markdown_chunk,
+            retry_instructions=retry_instructions,
         )
 
         for attempt in range(max_retries + 1):
@@ -422,6 +501,82 @@ class OpenAIUniversalEngine:
                 return None
 
         return None
+
+    async def _extract_chunk(
+        self,
+        markdown_chunk: str,
+        *,
+        timeout: float = 120.0,
+        max_retries: int = 2,
+    ) -> Optional[M720DocumentExtraction]:
+        primary = await self._extract_chunk_once(
+            markdown_chunk,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+
+        if not self.api_key:
+            return primary
+
+        if not self._should_run_chunk_critic(markdown_chunk, primary):
+            return primary
+
+        client = AsyncOpenAI(api_key=self.api_key)
+        guidance = await build_retry_guidance(
+            client,
+            source_text=markdown_chunk,
+            current_output=primary.model_dump() if primary is not None else {},
+            objective="Extraer activos declarables del Modelo 720 sin omisiones por fila o ISIN.",
+            schema_hint="M720DocumentExtraction",
+            context_label="structured_extraction_chunk",
+        )
+
+        if not guidance.needs_retry or not guidance.retry_instructions:
+            return primary
+
+        logger.info(
+            "CRITIC: retry focalizado activado (confidence=%.2f, missing=%s)",
+            guidance.confidence,
+            ", ".join(guidance.missing_signals) if guidance.missing_signals else "n/a",
+        )
+
+        retried = await self._extract_chunk_once(
+            markdown_chunk,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_instructions=guidance.retry_instructions,
+        )
+
+        if not self.loop_settings.enable_adjudication:
+            return retried if retried is not None else primary
+
+        primary_score = self._score_chunk_result(markdown_chunk, primary)
+        retry_score = self._score_chunk_result(markdown_chunk, retried)
+
+        if retried is None:
+            return primary
+        if primary is None:
+            return retried
+
+        if retry_score >= primary_score:
+            logger.info(
+                "ADJUDICATE: retry gana (%d vs %d)%s",
+                retry_score,
+                primary_score,
+                (
+                    f" | notes: {'; '.join(guidance.adjudication_notes)}"
+                    if guidance.adjudication_notes
+                    else ""
+                ),
+            )
+            return retried
+
+        logger.info(
+            "ADJUDICATE: primera pasada se mantiene (%d vs %d)",
+            primary_score,
+            retry_score,
+        )
+        return primary
 
     async def _rescue_missing_isins(
         self,

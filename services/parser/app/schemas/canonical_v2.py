@@ -261,6 +261,7 @@ class PlanRequest(BaseModel):
     sheets: Optional[list[dict[str, Any]]] = None  # For XLS: [{name, rows: [[cell, ...]]}]
     sheet_metas: Optional[list[SheetMeta]] = None
     selected_sheet_names: Optional[list[str]] = None
+    doc_type_hint: Optional[DocType] = None
 
     @field_validator("ejercicio")
     @classmethod

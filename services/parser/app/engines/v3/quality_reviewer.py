@@ -17,6 +17,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.services.model_policy import get_model_for_role
 from app.schemas.canonical_v2 import (
     CanonicalExtraction,
     ConsistencyCheck,
@@ -180,7 +181,7 @@ async def _harvey_legal_check(
     try:
         client = _get_openai()
         response = await client.chat.completions.create(
-            model="gpt-4o",
+            model=get_model_for_role("review"),
             response_format={"type": "json_object"},
             messages=[
                 {

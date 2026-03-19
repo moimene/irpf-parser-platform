@@ -42,6 +42,7 @@ from app.schemas.m720_boe_v2 import (
 )
 from app.engines.openai_universal import apply_exchange_rates, extract_m720_openai, openai_engine
 from app.exporters.excel_m720_v2 import export_to_excel
+from app.services.model_policy import get_model_for_role, get_reasoning_loop_settings
 
 app = FastAPI(
     title="IRPF Parser Service",
@@ -92,6 +93,7 @@ def health() -> dict:
     primary_engine = "harvey_ai" if has_harvey else (
         "docling" if (use_docling and has_docling) else "pdfplumber"
     )
+    reasoning_loop = get_reasoning_loop_settings()
 
     return {
         "ok": True,
@@ -129,7 +131,7 @@ def health() -> dict:
             "entities": ["PICTET", "GOLDMAN_SACHS", "CITI", "JP_MORGAN"],
             "openai_v2": {
                 "available": has_llm,
-                "model": os.environ.get("OPENAI_MODEL", "gpt-4o"),
+                "model": get_model_for_role("structured_extraction"),
                 "endpoint": "/api/v2/parse-universal",
                 "features": [
                     "structured_outputs",
@@ -140,6 +142,23 @@ def health() -> dict:
                     "isin_verification_pass",
                     "coverage_warnings",
                 ],
+            },
+            "extractor_runtime": {
+                "models": {
+                    "structured_extraction": get_model_for_role("structured_extraction"),
+                    "orchestration": get_model_for_role("orchestration"),
+                    "patrimonio": get_model_for_role("patrimonio"),
+                    "rentas": get_model_for_role("rentas"),
+                    "legal": get_model_for_role("legal"),
+                    "review": get_model_for_role("review"),
+                    "critic": get_model_for_role("critic"),
+                },
+                "reasoning_loop": {
+                    "critic_enabled": reasoning_loop.enable_critic_pass,
+                    "adjudication_enabled": reasoning_loop.enable_adjudication,
+                    "max_retry_passes": reasoning_loop.max_retry_passes,
+                    "min_signal_threshold": reasoning_loop.min_signal_threshold,
+                },
             },
         },
     }

@@ -17,6 +17,8 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.services.model_policy import get_model_for_role, get_reasoning_loop_settings
+from app.services.reasoning_loop import build_retry_guidance
 from app.schemas.canonical_v2 import (
     DocType,
     ExtractionPlan,
@@ -73,26 +75,99 @@ async def run_harvey_preanalysis(content_base64: str, filename: str) -> str:
         return f"Harvey pre-analysis unavailable: {exc}"
 
 
+def _selected_sheet_names(request: PlanRequest) -> list[str]:
+    if request.selected_sheet_names:
+        return request.selected_sheet_names
+    if request.sheet_metas:
+        return [meta.name for meta in request.sheet_metas]
+    return []
+
+
+def _should_retry_plan(request: PlanRequest, data: dict[str, Any]) -> bool:
+    settings = get_reasoning_loop_settings()
+    if not settings.enable_critic_pass or settings.max_retry_passes <= 0:
+        return False
+
+    sections = data.get("sections", [])
+    doc_type = str(data.get("doc_type", "unknown"))
+    confidence = float(data.get("doc_type_confidence", 0.0) or 0.0)
+    selected_sheets = _selected_sheet_names(request)
+    has_patrimonio = any(
+        str(section.get("extraction_pass", "")).lower() == "patrimonio"
+        for section in sections
+    )
+
+    if request.doc_type_hint and doc_type == "unknown":
+        return True
+    if (
+        request.doc_type_hint
+        and doc_type != request.doc_type_hint.value
+        and confidence < 0.95
+    ):
+        return True
+    if selected_sheets and len(sections) < len(selected_sheets):
+        return True
+    if selected_sheets and not has_patrimonio:
+        return True
+
+    return False
+
+
+def _score_plan_candidate(request: PlanRequest, data: dict[str, Any]) -> int:
+    sections = data.get("sections", [])
+    doc_type = str(data.get("doc_type", "unknown"))
+    score = 0
+
+    if doc_type != "unknown":
+        score += 5
+    if request.doc_type_hint and doc_type == request.doc_type_hint.value:
+        score += 5
+
+    score += min(5, len(sections))
+    if any(str(section.get("extraction_pass", "")).lower() == "patrimonio" for section in sections):
+        score += 3
+    if any(str(section.get("extraction_pass", "")).lower() == "rentas" for section in sections):
+        score += 1
+
+    return score
+
+
 async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
     """
     Build an ExtractionPlan for the given document.
 
     Steps:
-      1. If unstructured_pdf: call Harvey for pre-analysis context
-      2. Call OpenAI gpt-4o with JSON mode to classify doc type and plan sections
+      1. If unstructured_pdf: call specialist pre-analysis context
+      2. Call orchestration model to classify doc type and plan sections
+      3. Optionally run critic + retry when the draft plan looks incomplete
       3. Return structured ExtractionPlan
     """
     harvey_context = ""
-    if request.content_base64 and _looks_like_unstructured_pdf(request.filename):
+    should_run_specialist = (
+        request.content_base64
+        and (
+            request.doc_type_hint == DocType.unstructured_pdf
+            or (
+                request.doc_type_hint is None
+                and _looks_like_unstructured_pdf(request.filename)
+            )
+        )
+    )
+    if should_run_specialist:
         harvey_context = await run_harvey_preanalysis(
             request.content_base64, request.filename
         )
+
+    selected_sheet_names = _selected_sheet_names(request)
 
     # Build the prompt
     sheet_info = ""
     if request.sheet_metas:
         sheet_lines = []
+        selected_filter = set(selected_sheet_names) if selected_sheet_names else None
         for m in request.sheet_metas:
+            if selected_filter is not None and m.name not in selected_filter:
+                continue
             preview_str = "; ".join(
                 ", ".join(row) for row in m.preview[:2]
             )
@@ -104,6 +179,16 @@ async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
 
     harvey_section = (
         f"\nHarvey AI pre-analysis:\n{harvey_context}\n" if harvey_context else ""
+    )
+    doc_type_hint_section = (
+        f"\nDocument type hint from caller: {request.doc_type_hint.value}\n"
+        if request.doc_type_hint
+        else ""
+    )
+    selected_sheet_section = (
+        f"\nSelected sheets: {', '.join(selected_sheet_names)}\n"
+        if selected_sheet_names
+        else ""
     )
 
     system_prompt = (
@@ -124,30 +209,56 @@ async def build_extraction_plan(request: PlanRequest) -> ExtractionPlan:
         "Return ONLY valid JSON matching the ExtractionPlan schema."
     )
 
-    user_prompt = (
-        f"Document: {request.filename}\n"
-        f"Fiscal year: {request.ejercicio}\n"
-        f"{sheet_info}\n"
-        f"{harvey_section}\n"
-        "Produce an ExtractionPlan JSON with: doc_type, doc_type_confidence, custodian (if known), "
-        "ejercicio, reference_date (YYYY-MM-DD, use Dec 31 of ejercicio if unknown), "
-        "base_currency, sections (array), estimated_chunks, estimated_instruments, warnings."
-    )
+    def build_user_prompt(retry_instructions: str | None = None) -> str:
+        retry_section = (
+            f"\nRetry instructions from critic:\n{retry_instructions}\n"
+            if retry_instructions
+            else ""
+        )
+        return (
+            f"Document: {request.filename}\n"
+            f"Fiscal year: {request.ejercicio}\n"
+            f"{doc_type_hint_section}"
+            f"{selected_sheet_section}"
+            f"{sheet_info}\n"
+            f"{harvey_section}\n"
+            f"{retry_section}\n"
+            "Produce an ExtractionPlan JSON with: doc_type, doc_type_confidence, custodian (if known), "
+            "ejercicio, reference_date (YYYY-MM-DD, use Dec 31 of ejercicio if unknown), "
+            "base_currency, sections (array), estimated_chunks, estimated_instruments, warnings."
+        )
 
-    client = _get_openai()
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,
-        max_tokens=2000,
-    )
+    async def call_plan_once(retry_instructions: str | None = None) -> dict[str, Any]:
+        client = _get_openai()
+        response = await client.chat.completions.create(
+            model=get_model_for_role("orchestration"),
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": build_user_prompt(retry_instructions)},
+            ],
+            temperature=0.1,
+            max_tokens=2000,
+        )
+        raw = response.choices[0].message.content or "{}"
+        return json.loads(raw)
 
-    raw = response.choices[0].message.content or "{}"
-    data: dict[str, Any] = json.loads(raw)
+    data = await call_plan_once()
+
+    if _should_retry_plan(request, data):
+        client = _get_openai()
+        guidance = await build_retry_guidance(
+            client,
+            source_text=build_user_prompt(),
+            current_output=data,
+            objective="Clasificar el documento y construir un plan de extraccion coherente por secciones.",
+            schema_hint="ExtractionPlan",
+            context_label="orchestration_plan",
+        )
+        if guidance.needs_retry and guidance.retry_instructions:
+            retried_data = await call_plan_once(guidance.retry_instructions)
+            if _score_plan_candidate(request, retried_data) >= _score_plan_candidate(request, data):
+                data = retried_data
 
     # Normalize sections
     sections: list[PlannedSection] = []
