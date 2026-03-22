@@ -578,6 +578,129 @@ class OpenAIUniversalEngine:
         )
         return primary
 
+    async def _extract_full_document_json_fallback(
+        self,
+        full_markdown: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Optional[M720DocumentExtraction]:
+        """
+        Fallback extraction using JSON mode (not Structured Outputs).
+
+        When Structured Outputs fails (model returns parsed=None for all
+        chunks), this method sends the FULL markdown to the model with
+        JSON mode and then validates with model_validate().
+        """
+        if not self.api_key:
+            return None
+
+        client = AsyncOpenAI(api_key=self.api_key)
+
+        # Truncate to avoid token limits (keep first 60K chars ~15K tokens)
+        markdown_truncated = full_markdown[:60000]
+
+        # Generate the JSON schema from the Pydantic model
+        schema_json = M720DocumentExtraction.model_json_schema()
+        import json as _json
+        schema_str = _json.dumps(schema_json, indent=2, ensure_ascii=False)[:4000]
+
+        system_msg = (
+            M720_OPENAI_SYSTEM_PROMPT
+            + "\n\nRESPONSE FORMAT: Return a JSON object matching this schema. "
+            "Use exactly these field names.\n"
+            + schema_str
+        )
+
+        user_msg = (
+            "FALLBACK MODE: La extracción estructurada falló en todos los bloques. "
+            "Analiza el documento COMPLETO y extrae ABSOLUTAMENTE TODOS los activos "
+            "declarables para el Modelo 720.\n\n"
+            "ATENCIÓN ESPECIAL A DOCUMENTOS DE CUSTODIO MODELO 720:\n"
+            "- Busca tablas con columnas: 'Clave tipo de bien', 'Subclave', "
+            "'Código de cuenta', 'Saldo 31 Dic', 'Saldo medio 4T'\n"
+            "- Busca tablas con columnas: 'Identificación de valores', 'Valores', "
+            "'Valoración 31 Dic', 'Número de valores'\n"
+            "- Las filas con Clave 'C' son cuentas. Las filas con Clave 'V' son valores. "
+            "Las filas con Clave 'I' son IICs/fondos.\n"
+            "- Cada fila con divisa diferente es una cuenta separada.\n"
+            "- Incluye cuentas con saldo 0.\n\n"
+            "DOCUMENTO:\n\n"
+            + markdown_truncated
+        )
+
+        try:
+            completion = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    max_tokens=8000,
+                ),
+                timeout=timeout,
+            )
+
+            raw_json = completion.choices[0].message.content or "{}"
+            data = _json.loads(raw_json)
+
+            # Try to validate with Pydantic model_validate (lenient)
+            try:
+                result = M720DocumentExtraction.model_validate(data)
+            except Exception as val_err:
+                logger.warning(
+                    "Fallback: Pydantic validation failed, trying manual: %s",
+                    val_err,
+                )
+                # Manual fallback: just extract what we can
+                result = M720DocumentExtraction(
+                    cuentas=[],
+                    valores=[],
+                    iics=[],
+                    seguros=[],
+                    inmuebles=[],
+                )
+                # Try each array separately
+                for c in data.get("cuentas", []):
+                    try:
+                        result.cuentas.append(M720Cuenta.model_validate(c))
+                    except Exception:
+                        pass
+                for v in data.get("valores", []):
+                    try:
+                        result.valores.append(M720Valor.model_validate(v))
+                    except Exception:
+                        pass
+                for i_item in data.get("iics", []):
+                    try:
+                        result.iics.append(M720IIC.model_validate(i_item))
+                    except Exception:
+                        pass
+
+            n_total = (
+                len(result.cuentas)
+                + len(result.valores)
+                + len(result.iics)
+                + len(result.seguros)
+                + len(result.inmuebles)
+            )
+            logger.info(
+                "FALLBACK JSON mode: %d assets (C:%d V:%d I:%d S:%d B:%d)",
+                n_total,
+                len(result.cuentas),
+                len(result.valores),
+                len(result.iics),
+                len(result.seguros),
+                len(result.inmuebles),
+            )
+            return result if n_total > 0 else None
+
+        except Exception as e:
+            logger.error("Fallback JSON extraction failed: %s", e, exc_info=True)
+            return None
+
     async def _rescue_missing_isins(
         self,
         markdown_chunk: str,
@@ -807,6 +930,52 @@ class OpenAIUniversalEngine:
             len(valid_results),
             len(chunks),
         )
+
+        # ── FULL-DOCUMENT FALLBACK: when ALL blocks fail ──
+        # If every chunk returned None, try a single extraction without
+        # structured outputs (JSON mode) on the full markdown
+        if not valid_results and full_markdown.strip():
+            logger.warning(
+                "ALL %d blocks failed. Attempting full-document JSON fallback...",
+                len(chunks),
+            )
+            try:
+                fallback_result = await self._extract_full_document_json_fallback(
+                    full_markdown
+                )
+                if fallback_result is not None:
+                    n_fb = (
+                        len(fallback_result.cuentas)
+                        + len(fallback_result.valores)
+                        + len(fallback_result.iics)
+                        + len(fallback_result.seguros)
+                        + len(fallback_result.inmuebles)
+                    )
+                    if n_fb > 0:
+                        logger.info(
+                            "FALLBACK SUCCESS: %d assets extracted via JSON mode",
+                            n_fb,
+                        )
+                        valid_results.append(fallback_result)
+                        bloques_fallidos = 0  # Reset — fallback recovered
+                        coverage_warnings.append(CoverageWarning(
+                            tipo="fallback_json",
+                            severidad="info",
+                            mensaje=(
+                                f"Structured Outputs falló en los {len(chunks)} bloques. "
+                                f"Se usó extracción JSON mode como fallback y se "
+                                f"recuperaron {n_fb} activos."
+                            ),
+                        ))
+                    else:
+                        logger.warning("FALLBACK returned 0 assets")
+            except Exception as fb_err:
+                logger.error("FALLBACK failed: %s", fb_err, exc_info=True)
+                coverage_warnings.append(CoverageWarning(
+                    tipo="fallback_fallido",
+                    severidad="alta",
+                    mensaje=f"Fallback JSON mode también falló: {fb_err}",
+                ))
 
         # ── VERIFICATION PASS: global rescue for missing ISINs ──
         # Collect ALL extracted ISINs from first pass
