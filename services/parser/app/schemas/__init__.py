@@ -100,7 +100,7 @@ class ParseDocumentRequest(BaseModel):
 class ParseDocumentResponse(BaseModel):
     document_id: str
     expediente_id: str
-    parser_strategy: Literal["template", "semantic", "manual"]
+    parser_strategy: Literal["template", "semantic", "manual", "harvey_universal"]
     template_used: str
     confidence: float = Field(ge=0.0, le=1.0)
     requires_manual_review: bool
