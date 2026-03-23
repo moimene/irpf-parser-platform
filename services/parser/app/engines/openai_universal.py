@@ -977,6 +977,50 @@ class OpenAIUniversalEngine:
                     mensaje=f"Fallback JSON mode también falló: {fb_err}",
                 ))
 
+        # ── ANTHROPIC CLAUDE FALLBACK: when OpenAI completely fails ──
+        if not valid_results and full_markdown.strip():
+            logger.warning(
+                "OpenAI fallbacks exhausted. Attempting Claude extraction..."
+            )
+            try:
+                from app.engines.anthropic_fallback import extract_with_claude
+
+                claude_result = await extract_with_claude(
+                    full_markdown,
+                    M720_OPENAI_SYSTEM_PROMPT,  # Same prompt, different model
+                    timeout_seconds=180.0,
+                )
+                if claude_result is not None:
+                    n_claude = (
+                        len(claude_result.cuentas)
+                        + len(claude_result.valores)
+                        + len(claude_result.iics)
+                        + len(claude_result.seguros)
+                        + len(claude_result.inmuebles)
+                    )
+                    if n_claude > 0:
+                        logger.info(
+                            "CLAUDE FALLBACK SUCCESS: %d assets recovered",
+                            n_claude,
+                        )
+                        valid_results.append(claude_result)
+                        bloques_fallidos = 0
+                        coverage_warnings.append(CoverageWarning(
+                            tipo="fallback_claude",
+                            severidad="info",
+                            mensaje=(
+                                f"OpenAI falló completamente. Claude Sonnet "
+                                f"recuperó {n_claude} activos como fallback."
+                            ),
+                        ))
+            except Exception as claude_err:
+                logger.error("Claude fallback failed: %s", claude_err)
+                coverage_warnings.append(CoverageWarning(
+                    tipo="fallback_claude_fallido",
+                    severidad="alta",
+                    mensaje=f"Claude fallback también falló: {claude_err}",
+                ))
+
         # ── VERIFICATION PASS: global rescue for missing ISINs ──
         # Collect ALL extracted ISINs from first pass
         first_pass_isins: Set[str] = set()
